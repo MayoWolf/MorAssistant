@@ -342,10 +342,15 @@ app.get("/api/status", async (request, reply) => {
     });
   }
   let codex: "connected" | "pending" | "disconnected" = session.codexLoginId ? "pending" : "disconnected";
-  if (session.codexConnected) {
+  if (!session.codexLoginId && (session.codexConnected || env.INSTALLATION_TOKEN)) {
     try {
-      if (await workers.forUser(session.id).accountStatus() === "connected") codex = "connected";
-      else {
+      if (await workers.forUser(session.id).accountStatus() === "connected") {
+        codex = "connected";
+        if (!session.codexConnected) {
+          session.codexConnected = true;
+          saveSession(session);
+        }
+      } else if (session.codexConnected) {
         delete session.codexConnected;
         saveSession(session);
       }
