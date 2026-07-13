@@ -41,13 +41,19 @@ function contextFromUrl(): PartStudioContext | null {
   const workspaceId = params.get("workspaceId") ?? params.get("wid");
   const elementId = params.get("elementId") ?? params.get("eid");
   const workspaceOrVersion = params.get("workspaceOrVersion");
+  const rawConfiguration = params.get("configuration")?.trim();
+  const configuration = rawConfiguration
+    && rawConfiguration.toLowerCase() !== "default"
+    && rawConfiguration.toLowerCase() !== "{$configuration}"
+    ? rawConfiguration
+    : undefined;
   if (!documentId || !workspaceId || !elementId || (workspaceOrVersion && workspaceOrVersion !== "w")) return null;
   return {
     documentId,
     workspaceId,
     elementId,
     ...(workspaceOrVersion === "w" ? { workspaceOrVersion: "w" as const } : {}),
-    ...(params.get("configuration") ? { configuration: params.get("configuration")! } : {}),
+    ...(configuration ? { configuration } : {}),
     ...(params.get("server") ? { server: params.get("server")! } : {})
   };
 }

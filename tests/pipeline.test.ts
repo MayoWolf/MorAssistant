@@ -272,6 +272,16 @@ describe("installed Onshape extension pipeline", () => {
     });
     expect(defaultConfiguration.status).toBe(201);
 
+    const unsubstitutedDefaultConfiguration = await fetch(`${appOrigin}/api/plans`, {
+      method: "POST",
+      headers: sessionHeaders({ origin: appOrigin, "content-type": "application/json" }),
+      body: JSON.stringify({
+        prompt: "Change the depth dimension",
+        context: { ...base, workspaceOrVersion: "w", server: onshapeOrigin, configuration: "{$configuration}" }
+      })
+    });
+    expect(unsubstitutedDefaultConfiguration.status).toBe(201);
+
     const configuredDimension = await fetch(`${appOrigin}/api/plans`, {
       method: "POST",
       headers: sessionHeaders({ origin: appOrigin, "content-type": "application/json" }),
