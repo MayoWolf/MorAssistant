@@ -80,6 +80,15 @@ if (env.NODE_ENV === "production") {
 }
 
 const sessions = new Map<string, UserSession>();
+type PlanJob = {
+  id: string;
+  sessionId: string;
+  status: "planning" | "completed" | "failed";
+  createdAt: number;
+  plan?: StoredCadPlan;
+  error?: string;
+};
+const planJobs = new Map<string, PlanJob>();
 const sessionDatabasePath = env.SESSION_DB_PATH === ":memory:" ? env.SESSION_DB_PATH : resolve(repositoryRoot, env.SESSION_DB_PATH);
 const sessionStore = new SessionStore(sessionDatabasePath, env.SESSION_ENCRYPTION_KEY ?? randomBytes(32).toString("base64url"));
 const codexUsersRoot = resolve(repositoryRoot, env.CODEX_USERS_ROOT);
@@ -97,6 +106,58 @@ const workers = new CodexWorkerPool(
 
 function saveSession(session: UserSession): void {
   sessionStore.save(session);
+}
+
+const planRequestSchema = z.object({
+  prompt: z.string().trim().min(3).max(4_000),
+  context: z.unknown()
+}).strict();
+
+function parsePlanRequest(value: unknown): { prompt: string; context: PartStudioContext } {
+  const input = planRequestSchema.parse(value);
+  return { prompt: input.prompt, context: parseContext(input.context) };
+}
+
+async function createStoredPlan(
+  session: UserSession,
+  body: { prompt: string; context: PartStudioContext }
+): Promise<StoredCadPlan> {
+  const client = clientFor(session, body.context);
+  const featureTree = await client.listFeatures(body.context);
+  const plan = cadPlanSchema.parse(await workers.forUser(session.id).createPlan(body.prompt, featureTree));
+  validatePlanAgainstFeatureTree(plan, featureTree.features);
+  if (body.context.configuration && plan.operations.some((operation) => operation.type === "update_dimension")) {
+    throw new HttpError(409, "Dimension edits in configured Part Studios are not supported yet. Rename operations remain available.");
+  }
+  const stored: StoredCadPlan = {
+    ...plan,
+    id: randomUUID(),
+    context: body.context,
+    prompt: body.prompt,
+    status: "pending",
+    createdAt: new Date().toISOString()
+  };
+  while (session.plans.size >= 100) {
+    const oldestPlanId = session.plans.keys().next().value as string | undefined;
+    if (!oldestPlanId) break;
+    session.plans.delete(oldestPlanId);
+  }
+  session.plans.set(stored.id, stored);
+  saveSession(session);
+  return stored;
+}
+
+function prunePlanJobs(): void {
+  const cutoff = Date.now() - 15 * 60_000;
+  for (const [id, job] of planJobs) {
+    if (job.createdAt < cutoff && job.status !== "planning") planJobs.delete(id);
+  }
+}
+
+function planJobError(error: unknown): string {
+  if (error instanceof z.ZodError) return "Codex returned a plan that did not pass validation.";
+  if (error instanceof Error) return error.message;
+  return "Could not create a CAD plan.";
 }
 
 function getCookieSession(request: FastifyRequest, reply: FastifyReply): UserSession {
@@ -475,32 +536,48 @@ app.get("/api/features", async (request, reply) => {
 
 app.post("/api/plans", async (request, reply) => {
   const session = getSession(request, reply);
-  const input = z.object({ prompt: z.string().trim().min(3).max(4_000), context: z.unknown() }).strict().parse(request.body);
-  const body = { prompt: input.prompt, context: parseContext(input.context) };
-  const client = clientFor(session, body.context);
-  const featureTree = await client.listFeatures(body.context);
-  const plan = cadPlanSchema.parse(await workers.forUser(session.id).createPlan(body.prompt, featureTree));
-  validatePlanAgainstFeatureTree(plan, featureTree.features);
-  if (body.context.configuration && plan.operations.some((operation) => operation.type === "update_dimension")) {
-    throw new HttpError(409, "Dimension edits in configured Part Studios are not supported yet. Rename operations remain available.");
-  }
-  const stored: StoredCadPlan = {
-    ...plan,
-    id: randomUUID(),
-    context: body.context,
-    prompt: body.prompt,
-    status: "pending",
-    createdAt: new Date().toISOString()
-  };
-  while (session.plans.size >= 100) {
-    const oldestPlanId = session.plans.keys().next().value as string | undefined;
-    if (!oldestPlanId) break;
-    session.plans.delete(oldestPlanId);
-  }
-  session.plans.set(stored.id, stored);
-  saveSession(session);
+  const stored = await createStoredPlan(session, parsePlanRequest(request.body));
   reply.code(201);
   return stored;
+});
+
+app.post("/api/plan-jobs", async (request, reply) => {
+  const session = getSession(request, reply);
+  const body = parsePlanRequest(request.body);
+  prunePlanJobs();
+  if ([...planJobs.values()].some((job) => job.sessionId === session.id && job.status === "planning")) {
+    return reply.code(409).send({ error: "A CAD plan is already being created for this session." });
+  }
+
+  const job: PlanJob = {
+    id: randomUUID(),
+    sessionId: session.id,
+    status: "planning",
+    createdAt: Date.now()
+  };
+  planJobs.set(job.id, job);
+  void createStoredPlan(session, body).then((plan) => {
+    job.status = "completed";
+    job.plan = plan;
+  }).catch((error) => {
+    job.status = "failed";
+    job.error = planJobError(error);
+    request.log.error(logError(error), "Background plan creation failed");
+  });
+
+  reply.code(202);
+  return { id: job.id, status: job.status };
+});
+
+app.get("/api/plan-jobs/:id", async (request, reply) => {
+  const session = getSession(request, reply);
+  const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+  prunePlanJobs();
+  const job = planJobs.get(id);
+  if (!job || job.sessionId !== session.id) return reply.code(404).send({ error: "Plan request not found." });
+  if (job.status === "completed") return { id: job.id, status: job.status, plan: job.plan };
+  if (job.status === "failed") return { id: job.id, status: job.status, error: job.error };
+  return { id: job.id, status: job.status };
 });
 
 app.post("/api/plans/:id/apply", async (request, reply) => {

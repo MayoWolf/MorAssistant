@@ -30,6 +30,11 @@ function installationTokenFromLaunch(): string | null {
 
 const installationToken = installationTokenFromLaunch();
 
+type PlanJobResponse =
+  | { id: string; status: "planning" }
+  | { id: string; status: "completed"; plan: StoredCadPlan }
+  | { id: string; status: "failed"; error: string };
+
 function contextFromUrl(): PartStudioContext | null {
   const params = new URLSearchParams(location.search);
   const documentId = params.get("documentId") ?? params.get("did");
@@ -60,6 +65,17 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const body = await response.json().catch(() => ({ error: `Request failed (${response.status}).` })) as T & { error?: string };
   if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status}).`);
   return body;
+}
+
+async function waitForPlan(jobId: string): Promise<StoredCadPlan> {
+  const deadline = Date.now() + 10 * 60_000;
+  while (Date.now() < deadline) {
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_000));
+    const job = await api<PlanJobResponse>(`/api/plan-jobs/${jobId}`);
+    if (job.status === "completed") return job.plan;
+    if (job.status === "failed") throw new Error(job.error);
+  }
+  throw new Error("Codex planning timed out. Try the request again.");
 }
 
 function BrandMark() {
@@ -132,11 +148,11 @@ export function App() {
     if (!context || !prompt.trim()) return;
     setBusy("planning"); setError(null); setPlan(null);
     try {
-      const next = await api<StoredCadPlan>("/api/plans", {
+      const job = await api<PlanJobResponse>("/api/plan-jobs", {
         method: "POST",
         body: JSON.stringify({ prompt, context })
       });
-      setPlan(next);
+      setPlan(job.status === "completed" ? job.plan : await waitForPlan(job.id));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not create a plan.");
     } finally {

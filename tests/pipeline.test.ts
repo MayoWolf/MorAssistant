@@ -153,6 +153,26 @@ describe("installed Onshape extension pipeline", () => {
       elementId: "element",
       server: onshapeOrigin
     };
+    const jobStart = await fetch(`${appOrigin}/api/plan-jobs`, {
+      method: "POST",
+      headers: sessionHeaders({ origin: appOrigin, "content-type": "application/json" }),
+      body: JSON.stringify({ prompt: "Preview a clearer feature name", context })
+    });
+    expect(jobStart.status).toBe(202);
+    const { id: jobId } = await jobStart.json() as { id: string };
+    let completedJob: { status?: string; plan?: { status?: string; operations?: unknown[] } } = {};
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      completedJob = await fetch(`${appOrigin}/api/plan-jobs/${jobId}`, {
+        headers: sessionHeaders()
+      }).then((response) => response.json());
+      if (completedJob.status !== "planning") break;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+    }
+    expect(completedJob).toMatchObject({
+      status: "completed",
+      plan: { status: "pending" }
+    });
+
     const planResponse = await fetch(`${appOrigin}/api/plans`, {
       method: "POST",
       headers: sessionHeaders({ origin: appOrigin, "content-type": "application/json" }),

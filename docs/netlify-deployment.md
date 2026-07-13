@@ -36,6 +36,8 @@ VITE_API_ORIGIN=https://morassistant-onshape.netlify.app
 
 The matching `[[redirects]]` rule proxies `/api/*` to the Tailscale Funnel. This prevents Brave/Chromium from treating the request as public-to-private when Tailscale split DNS resolves the Funnel hostname to the Mac's `100.x` address. It also removes any dependency on a browser local-network permission prompt.
 
+Planning itself uses a short job-start request followed by status polling. Codex can therefore complete beyond Netlify's individual proxy-request timeout without losing the preview response.
+
 Forks should replace the proxy destination and `VITE_API_ORIGIN` with their own panel and Funnel origins. Managed multi-user deployments can instead set `VITE_API_ORIGIN` directly to the managed API origin and remove the personal proxy rule.
 
 ## Backend settings

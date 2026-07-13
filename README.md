@@ -89,7 +89,8 @@ The narrow scope is intentional. MorAssistant prefers a small set of well-valida
 ```mermaid
 flowchart LR
   U["Designer in Onshape"] -->|prompt| P["Right-panel UI<br/>React · Netlify"]
-  P -->|credentialed HTTPS| A["Trusted API<br/>Fastify"]
+  P -->|same-origin /api/*| N["Netlify HTTPS proxy"]
+  N -->|credentialed HTTPS| A["Trusted API<br/>Fastify"]
 
   subgraph Backend["Persistent private backend"]
     A --> S["Encrypted sessions<br/>SQLite · AES-256-GCM"]
@@ -110,6 +111,7 @@ The model never receives an Onshape OAuth token, never sends arbitrary REST requ
 ### Safety properties
 
 - **Preview before mutation** — creating a plan and applying it are separate endpoints.
+- **Timeout-resistant planning** — the panel starts a background planning job and polls it, so a long Codex turn never depends on a CDN request timeout.
 - **Strict structured output** — Codex output is normalized and parsed through a closed schema.
 - **Current-state validation** — feature names, parameter expressions, and Onshape concurrency metadata must still match.
 - **Fail closed** — execution stops on the first failed operation.
