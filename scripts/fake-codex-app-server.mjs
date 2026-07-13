@@ -8,6 +8,7 @@ if (process.env.ONSHAPE_CLIENT_SECRET || process.env.SESSION_SECRET || process.e
 let connected = false;
 let threadCounter = 0;
 let turnCounter = 0;
+const completedTurns = new Map();
 
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -92,6 +93,7 @@ lines.on("line", (line) => {
           throw new Error("thread/start must use the Codex SandboxMode spelling read-only");
         }
         const id = `thread-${++threadCounter}`;
+        completedTurns.set(id, []);
         send({ id: request.id, result: { thread: { id } } });
         break;
       }
@@ -104,6 +106,8 @@ lines.on("line", (line) => {
         }
         const id = `turn-${++turnCounter}`;
         const plan = planFromInput(request.params);
+        const item = { type: "agentMessage", id: `message-${id}`, text: JSON.stringify(plan), phase: "final_answer", memoryCitation: null };
+        completedTurns.get(request.params.threadId)?.push({ id, status: "completed", items: [item], error: null });
         send({ id: request.id, result: { turn: { id, status: "inProgress", items: [], error: null } } });
         send({
           method: "turn/completed",
@@ -112,10 +116,17 @@ lines.on("line", (line) => {
             turn: {
               id,
               status: "completed",
-              items: [{ type: "agentMessage", id: `message-${id}`, text: JSON.stringify(plan), phase: "final_answer", memoryCitation: null }],
+              items: [],
               error: null
             }
           }
+        });
+        break;
+      }
+      case "thread/read": {
+        send({
+          id: request.id,
+          result: { thread: { id: request.params.threadId, turns: completedTurns.get(request.params.threadId) ?? [] } }
         });
         break;
       }

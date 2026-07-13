@@ -286,12 +286,23 @@ export class CodexWorker {
       const event = params as { threadId?: string; turn?: { id?: string } };
       return event.threadId === threadResponse.thread.id && event.turn?.id === turnResponse.turn.id;
     }) as {
-      turn: { status: string; error?: { message?: string } | null; items: Array<{ type: string; text?: string }> };
+      turn: { status: string; error?: { message?: string } | null; items?: Array<{ type: string; text?: string }> };
     };
     if (completed.turn.status !== "completed") {
       throw new Error(completed.turn.error?.message ?? `Codex planning turn ${completed.turn.status}.`);
     }
-    const message = [...completed.turn.items].reverse().find((item) => item.type === "agentMessage" && item.text);
+    let items = completed.turn.items ?? [];
+    let message = [...items].reverse().find((item) => item.type === "agentMessage" && item.text);
+    if (!message) {
+      const threadRead = await this.request("thread/read", {
+        threadId: threadResponse.thread.id,
+        includeTurns: true
+      }) as {
+        thread?: { turns?: Array<{ id?: string; items?: Array<{ type: string; text?: string }> }> };
+      };
+      items = threadRead.thread?.turns?.find((turn) => turn.id === turnResponse.turn.id)?.items ?? [];
+      message = [...items].reverse().find((item) => item.type === "agentMessage" && item.text);
+    }
     if (!message?.text) throw new Error("Codex completed without a CAD plan.");
     let parsed: unknown;
     try {
