@@ -294,14 +294,16 @@ export class CodexWorker {
     let items = completed.turn.items ?? [];
     let message = [...items].reverse().find((item) => item.type === "agentMessage" && item.text);
     if (!message) {
-      const threadRead = await this.request("thread/read", {
-        threadId: threadResponse.thread.id,
-        includeTurns: true
-      }) as {
-        thread?: { turns?: Array<{ id?: string; items?: Array<{ type: string; text?: string }> }> };
-      };
-      items = threadRead.thread?.turns?.find((turn) => turn.id === turnResponse.turn.id)?.items ?? [];
-      message = [...items].reverse().find((item) => item.type === "agentMessage" && item.text);
+      const itemCompleted = await this.waitForNotification("item/completed", (params) => {
+        const event = params as { threadId?: string; turnId?: string; item?: { type?: string; text?: string } };
+        return event.threadId === threadResponse.thread.id &&
+          event.turnId === turnResponse.turn.id &&
+          event.item?.type === "agentMessage" &&
+          typeof event.item.text === "string";
+      }, 5_000).catch(() => undefined) as { item?: { type?: string; text?: string } } | undefined;
+      if (itemCompleted?.item?.type === "agentMessage" && itemCompleted.item.text) {
+        message = { type: itemCompleted.item.type, text: itemCompleted.item.text };
+      }
     }
     if (!message?.text) throw new Error("Codex completed without a CAD plan.");
     let parsed: unknown;
