@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="720" viewBox="0 0 1440 720" role="img" aria-labelledby="title desc">
+  <title id="title">MorAssistant — approval-first AI CAD copilot inside Onshape</title>
+  <desc id="desc">A dark emerald banner showing an isometric cube and a preview of the MorAssistant Onshape right panel.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#091712"/>
+      <stop offset="0.52" stop-color="#12372B"/>
+      <stop offset="1" stop-color="#0B211A"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.28" cy="0.45" r="0.72">
+      <stop offset="0" stop-color="#2DAE7C" stop-opacity=".33"/>
+      <stop offset=".58" stop-color="#187A5A" stop-opacity=".08"/>
+      <stop offset="1" stop-color="#187A5A" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="cube" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#E7FFD1"/>
+      <stop offset="1" stop-color="#C6F26C"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="20" stdDeviation="24" flood-color="#020906" flood-opacity=".42"/>
+    </filter>
+    <pattern id="grid" width="46" height="46" patternUnits="userSpaceOnUse">
+      <path d="M46 0H0v46" fill="none" stroke="#B9E8D3" stroke-opacity=".055"/>
+    </pattern>
+  </defs>
+
+  <rect width="1440" height="720" rx="34" fill="url(#bg)"/>
+  <rect width="1440" height="720" rx="34" fill="url(#glow)"/>
+  <rect x="1" y="1" width="1438" height="718" rx="33" fill="url(#grid)" stroke="#A8DCC4" stroke-opacity=".16" stroke-width="2"/>
+
+  <g opacity=".62">
+    <circle cx="82" cy="82" r="5" fill="#C6F26C"/>
+    <path d="M106 82h86" stroke="#B1CFC1" stroke-opacity=".36" stroke-width="2"/>
+    <circle cx="1360" cy="642" r="5" fill="#C6F26C"/>
+    <path d="M1248 642h86" stroke="#B1CFC1" stroke-opacity=".36" stroke-width="2"/>
+  </g>
+
+  <g transform="translate(106 130)">
+    <g transform="translate(4 8)">
+      <path d="M0 184V66L102 8l102 58v118l-102 59L0 184Z" fill="#102E24" stroke="url(#cube)" stroke-width="13" stroke-linejoin="round"/>
+      <path d="m0 66 102 59 102-59M102 125v118M0 184l102-59 102 59" fill="none" stroke="url(#cube)" stroke-width="10" stroke-linejoin="round"/>
+      <path d="M194-9c3 21 15 33 36 36-21 3-33 15-36 36-3-21-15-33-36-36 21-3 33-15 36-36Z" fill="#C6F26C" stroke="#082A1F" stroke-width="7" stroke-linejoin="round"/>
+    </g>
+
+    <text x="0" y="326" fill="#C6F26C" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" font-weight="700" letter-spacing="5">ONSHAPE COPILOT</text>
+    <text x="0" y="390" fill="#F5FFF9" font-family="Avenir Next, Inter, system-ui, sans-serif" font-size="61" font-weight="700" letter-spacing="-2">MorAssistant</text>
+    <text x="0" y="436" fill="#B7CEC3" font-family="Avenir Next, Inter, system-ui, sans-serif" font-size="24">CAD changes you can see</text>
+    <text x="0" y="468" fill="#B7CEC3" font-family="Avenir Next, Inter, system-ui, sans-serif" font-size="24">before they happen.</text>
+
+    <g transform="translate(0 515)" font-family="Avenir Next, Inter, system-ui, sans-serif" font-size="15" font-weight="600">
+      <rect width="166" height="42" rx="21" fill="#E5F7EE" fill-opacity=".11" stroke="#B8E7D1" stroke-opacity=".22"/>
+      <circle cx="23" cy="21" r="5" fill="#5AD19B"/>
+      <text x="38" y="27" fill="#DDF2E8">Right-panel native</text>
+      <rect x="178" width="128" height="42" rx="21" fill="#E5F7EE" fill-opacity=".11" stroke="#B8E7D1" stroke-opacity=".22"/>
+      <circle cx="201" cy="21" r="5" fill="#5AD19B"/>
+      <text x="216" y="27" fill="#DDF2E8">Codex</text>
+      <rect x="318" width="154" height="42" rx="21" fill="#C6F26C" fill-opacity=".12" stroke="#C6F26C" stroke-opacity=".32"/>
+      <path d="m338 21 7 7 13-16" fill="none" stroke="#C6F26C" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="368" y="27" fill="#E8F9C3">Approval-first</text>
+    </g>
+  </g>
+
+  <g transform="translate(778 66)" filter="url(#shadow)">
+    <rect width="548" height="588" rx="25" fill="#F8FAF6" stroke="#C6F26C" stroke-opacity=".42" stroke-width="2"/>
+    <rect width="548" height="76" rx="25" fill="#FCFDFB"/>
+    <path d="M0 76h548" stroke="#DCE4DE"/>
+    <g transform="translate(24 20)">
+      <path d="M0 25V8L15 0l15 8v17l-15 9L0 25Z" fill="none" stroke="#187A5A" stroke-width="2.8" stroke-linejoin="round"/>
+      <path d="m0 8 15 9 15-9M15 17v17" fill="none" stroke="#187A5A" stroke-width="2.4"/>
+      <text x="43" y="16" fill="#17231E" font-family="Avenir Next, Inter, system-ui, sans-serif" font-size="17" font-weight="700">MorAssistant</text>
+      <text x="43" y="34" fill="#718078" font-family="Avenir Next, Inter, system-ui, sans-serif" font-size="10" letter-spacing="1.5">ONSHAPE COPILOT</text>
+      <rect x="392" y="2" width="103" height="30" rx="15" fill="#EDF2EE"/>
+      <circle cx="410" cy="17" r="5" fill="#35AE7D"/>
+      <text x="423" y="21" fill="#516059" font-family="Avenir Next, Inter, system-ui, sans-serif" font-size="11" font-weight="700">CODEX</text>
+    </g>
+
+    <g transform="translate(24 104)" font-family="Avenir Next, Inter, system-ui, sans-serif">
+      <text x="0" y="0" fill="#187A5A" font-size="11" font-weight="700" letter-spacing="1.8">DESCRIBE THE CHANGE</text>
+      <text x="444" y="0" fill="#7A867F" font-size="11">Preview first</text>
+      <rect y="18" width="500" height="124" rx="15" fill="#FFFFFF" stroke="#CFD8D1"/>
+      <text x="18" y="52" fill="#26372F" font-size="15">Change Base Extrusion depth</text>
+      <text x="18" y="76" fill="#26372F" font-size="15">from 4 mm to 6 mm</text>
+      <path d="M0 99h500" stroke="#E4E9E5"/>
+      <text x="18" y="124" fill="#7A867F" font-size="11">Current Part Studio</text>
+      <rect x="377" y="106" width="108" height="27" rx="8" fill="#187A5A"/>
+      <text x="397" y="124" fill="white" font-size="11" font-weight="700">Create plan</text>
+
+      <rect y="166" width="500" height="266" rx="15" fill="#FFFFFF" stroke="#D6DED8"/>
+      <text x="18" y="198" fill="#187A5A" font-size="10" font-weight="700" letter-spacing="1.6">PROPOSED PLAN</text>
+      <text x="18" y="229" fill="#1D2A24" font-size="17" font-weight="700">Update the base extrusion depth</text>
+      <rect x="424" y="188" width="58" height="24" rx="7" fill="#DEF2E8"/>
+      <text x="437" y="204" fill="#126044" font-size="9" font-weight="700">LOW RISK</text>
+      <path d="M0 250h500" stroke="#E5EAE6"/>
+      <text x="18" y="285" fill="#8A9690" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11">01</text>
+      <text x="58" y="283" fill="#213129" font-size="13" font-weight="700">Update dimension</text>
+      <rect x="58" y="298" width="205" height="25" rx="6" fill="#EDF1EE"/>
+      <text x="70" y="315" fill="#3E4D46" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10">Base Extrusion.depth</text>
+      <path d="m275 310 12 0m-4-4 4 4-4 4" stroke="#187A5A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="298" y="298" width="54" height="25" rx="6" fill="#EDF1EE"/>
+      <text x="311" y="315" fill="#3E4D46" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10">6 mm</text>
+      <text x="58" y="346" fill="#7B8781" font-size="11">Uses the existing parameter and preserves units.</text>
+      <path d="M0 369h500" stroke="#E5EAE6"/>
+      <text x="18" y="400" fill="#213129" font-size="12" font-weight="700">Ready for review</text>
+      <text x="18" y="417" fill="#7B8781" font-size="9">Onshape can undo applied edits.</text>
+      <rect x="374" y="385" width="108" height="32" rx="9" fill="#187A5A"/>
+      <text x="391" y="406" fill="white" font-size="11" font-weight="700">Approve &amp; apply</text>
+
+      <g transform="translate(134 465)">
+        <path d="m0 8 7 7 13-16" fill="none" stroke="#187A5A" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+        <text x="31" y="12" fill="#738179" font-size="10" font-weight="700" letter-spacing="1.2">NO CAD CHANGE RUNS WITHOUT APPROVAL</text>
+      </g>
+    </g>
+  </g>
+</svg>
