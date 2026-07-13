@@ -76,6 +76,8 @@ The geometry probe is a FeatureScript lambda evaluated by Onshape against the cu
 
 Body-detail and mass-property calls are best-effort. If Onshape cannot calculate one source—for example, an empty Part Studio or a part with missing material density—feature-level planning remains available and the missing evidence is recorded in the plan trace.
 
+Geometry evidence is cached in memory by user, element, configuration, and exact source microversion for ten minutes. Repeated prompts against an unchanged model therefore need only one fresh feature-tree read. The cache is bounded, never persisted, and cannot cross users. Onshape `429` responses honor `Retry-After` for short windows; longer windows return the requested wait time instead of an opaque API failure.
+
 ## 2. Planning and bounded self-repair
 
 Codex runs in a read-only, network-disabled app-server turn. It receives CAD data, not OAuth credentials. Its response must match one closed JSON schema with an approval-required literal.
@@ -190,4 +192,3 @@ MorAssistant's broad native fallback is intentionally scoped to the active **wor
 `npm run check` type-checks and builds every workspace, then runs unit and full-pipeline tests. The deterministic pipeline covers OAuth, Codex sign-in, dependency/geometry inspection, invalid-plan self-repair, approval, native mutation, microversion guards, per-operation rebuild verification, fail-fast behavior, and separately approved recovery.
 
 The mock services never contact a real Onshape document or OpenAI account. A production release still requires the live Onshape App Store matrix in [app-store-release-checklist.md](app-store-release-checklist.md).
-

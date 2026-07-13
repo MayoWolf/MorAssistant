@@ -84,6 +84,13 @@ export interface PartStudioInspection {
   warnings: string[];
 }
 
+export interface PartStudioGeometryEvidence {
+  bodyDetails?: unknown;
+  massProperties?: unknown;
+  topologyEvaluation?: unknown;
+  warnings: string[];
+}
+
 export interface FeatureUpdateConcurrency {
   serializationVersion?: string;
   sourceMicroversion?: string;
@@ -257,7 +264,9 @@ export class OnshapeApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
-    readonly body: unknown
+    readonly body: unknown,
+    readonly retryAfterSeconds?: number,
+    readonly rateLimitRemaining?: number
   ) {
     super(message);
     this.name = "OnshapeApiError";
@@ -332,7 +341,7 @@ export class OnshapeClient {
     this.apiVersion = options.apiVersion ?? "v15";
   }
 
-  private async request<T>(path: string, init: RequestInit = {}, retry = true): Promise<T> {
+  private async request<T>(path: string, init: RequestInit = {}, retryAuth = true, rateLimitAttempt = 0): Promise<T> {
     const accessToken = await this.options.accessToken();
     const response = await fetch(`${this.baseUrl}/api/${this.apiVersion}${path}`, {
       ...init,
@@ -345,15 +354,41 @@ export class OnshapeClient {
       redirect: "follow"
     });
 
-    if (response.status === 401 && retry && this.options.refreshAccessToken) {
+    if (response.status === 401 && retryAuth && this.options.refreshAccessToken) {
       await this.options.refreshAccessToken();
-      return this.request<T>(path, init, false);
+      return this.request<T>(path, init, false, rateLimitAttempt);
     }
 
     const contentType = response.headers.get("content-type") ?? "";
     const body = contentType.includes("json")
       ? await response.json().catch(() => null)
       : await response.text().catch(() => "");
+    if (response.status === 429) {
+      const retryAfterHeader = response.headers.get("retry-after");
+      const retryAfterSeconds = retryAfterHeader === null
+        ? Math.min(2 ** rateLimitAttempt, 5)
+        : /^\d+(?:\.\d+)?$/u.test(retryAfterHeader.trim())
+          ? Number(retryAfterHeader)
+          : Math.max(0, (Date.parse(retryAfterHeader) - Date.now()) / 1_000);
+      if (rateLimitAttempt < 2 && Number.isFinite(retryAfterSeconds) && retryAfterSeconds <= 30) {
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, Math.max(0, retryAfterSeconds) * 1_000));
+        return this.request<T>(path, init, retryAuth, rateLimitAttempt + 1);
+      }
+      const remainingHeader = response.headers.get("x-rate-limit-remaining");
+      const rateLimitRemaining = remainingHeader !== null && Number.isFinite(Number(remainingHeader))
+        ? Number(remainingHeader)
+        : undefined;
+      const retryMessage = Number.isFinite(retryAfterSeconds)
+        ? ` Onshape asked MorAssistant to retry in ${Math.ceil(retryAfterSeconds)} seconds.`
+        : " Try again after Onshape's endpoint rate-limit window resets.";
+      throw new OnshapeApiError(
+        `Onshape API rate limit reached.${retryMessage}`,
+        response.status,
+        body,
+        Number.isFinite(retryAfterSeconds) ? retryAfterSeconds : undefined,
+        rateLimitRemaining
+      );
+    }
     if (!response.ok) throw new OnshapeApiError(`Onshape API request failed (${response.status}).`, response.status, body);
     return body as T;
   }
@@ -400,8 +435,12 @@ export class OnshapeClient {
     );
   }
 
-  async inspectPartStudio(context: PartStudioContext): Promise<PartStudioInspection> {
-    const featureTree = await this.listFeatures(context);
+  async inspectPartStudio(
+    context: PartStudioContext,
+    existingFeatureTree?: FeatureListResponse,
+    existingGeometry?: PartStudioGeometryEvidence
+  ): Promise<PartStudioInspection> {
+    const featureTree = existingFeatureTree ?? await this.listFeatures(context);
     const topologyScript = [
       "function(context is Context, definition is map)",
       "{",
@@ -413,18 +452,25 @@ export class OnshapeClient {
       "    };",
       "}"
     ].join("\n");
-    const [bodyResult, massResult, topologyResult] = await Promise.allSettled([
-      this.getBodyDetails(context),
-      this.getMassProperties(context),
-      this.evaluateFeatureScript(context, topologyScript, typeof featureTree.libraryVersion === "number" ? featureTree.libraryVersion : undefined)
-    ]);
-    const warnings: string[] = [];
-    if (bodyResult.status === "rejected") warnings.push("Onshape body details were unavailable; feature-level planning remains available.");
-    if (massResult.status === "rejected") warnings.push("Onshape mass properties were unavailable; dimensional and feature planning remains available.");
-    if (topologyResult.status === "rejected") warnings.push("The read-only FeatureScript topology probe was unavailable.");
-    const bodyDetails = bodyResult.status === "fulfilled" ? bodyResult.value : undefined;
-    const massProperties = massResult.status === "fulfilled" ? massResult.value : undefined;
-    const topologyEvaluation = topologyResult.status === "fulfilled" ? topologyResult.value : undefined;
+    let geometry = existingGeometry;
+    if (!geometry) {
+      const [bodyResult, massResult, topologyResult] = await Promise.allSettled([
+        this.getBodyDetails(context),
+        this.getMassProperties(context),
+        this.evaluateFeatureScript(context, topologyScript, typeof featureTree.libraryVersion === "number" ? featureTree.libraryVersion : undefined)
+      ]);
+      const warnings: string[] = [];
+      if (bodyResult.status === "rejected") warnings.push("Onshape body details were unavailable; feature-level planning remains available.");
+      if (massResult.status === "rejected") warnings.push("Onshape mass properties were unavailable; dimensional and feature planning remains available.");
+      if (topologyResult.status === "rejected") warnings.push("The read-only FeatureScript topology probe was unavailable.");
+      geometry = {
+        ...(bodyResult.status === "fulfilled" ? { bodyDetails: bodyResult.value } : {}),
+        ...(massResult.status === "fulfilled" ? { massProperties: massResult.value } : {}),
+        ...(topologyResult.status === "fulfilled" ? { topologyEvaluation: topologyResult.value } : {}),
+        warnings
+      };
+    }
+    const { bodyDetails, massProperties, topologyEvaluation, warnings } = geometry;
     return {
       featureTree,
       dependencies: buildFeatureDependencyGraph(featureTree),
@@ -490,8 +536,12 @@ export class OnshapeClient {
     );
   }
 
-  async applyOperation(context: PartStudioContext, operation: CadOperation): Promise<string> {
-    const tree = await this.listFeatures(context);
+  async applyOperation(
+    context: PartStudioContext,
+    operation: CadOperation,
+    featureTree?: FeatureListResponse
+  ): Promise<string> {
+    const tree = featureTree ?? await this.listFeatures(context);
     if (operation.type === "create_rectangle_sketch") {
       if (tree.features.some((feature) => feature.name?.toLocaleLowerCase() === operation.sketchName.toLocaleLowerCase())) {
         throw new Error(`A feature named ${operation.sketchName} already exists.`);
@@ -561,6 +611,10 @@ export class OnshapeClient {
 
   async inspectRegenerationErrors(context: PartStudioContext): Promise<RegenerationError[]> {
     const tree = await this.listFeatures(context);
+    return this.regenerationErrors(tree);
+  }
+
+  regenerationErrors(tree: FeatureListResponse): RegenerationError[] {
     const states = normalizeFeatureStates(tree.featureStates);
     return tree.features.flatMap((feature) => {
       const state = states.get(feature.featureId);

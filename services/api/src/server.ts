@@ -24,8 +24,10 @@ import {
   OnshapeClient,
   OnshapeApiError,
   refreshOnshapeTokens,
+  type FeatureListResponse,
   type OnshapeOAuthConfig,
   type OnshapeFeature,
+  type PartStudioGeometryEvidence,
   type OnshapeTokens
 } from "@morassistant/onshape-client";
 import type { PartStudioContext } from "@morassistant/shared-types";
@@ -92,6 +94,7 @@ type PlanJob = {
   error?: string;
 };
 const planJobs = new Map<string, PlanJob>();
+const geometryCache = new Map<string, { createdAt: number; evidence: PartStudioGeometryEvidence }>();
 const sessionDatabasePath = env.SESSION_DB_PATH === ":memory:" ? env.SESSION_DB_PATH : resolve(repositoryRoot, env.SESSION_DB_PATH);
 const sessionStore = new SessionStore(sessionDatabasePath, env.SESSION_ENCRYPTION_KEY ?? randomBytes(32).toString("base64url"));
 const codexUsersRoot = resolve(repositoryRoot, env.CODEX_USERS_ROOT);
@@ -115,6 +118,30 @@ function featuresWithHashes(features: OnshapeFeature[]): Array<OnshapeFeature & 
   return features.map((feature) => ({ ...feature, featureHash: featureFingerprint(feature) }));
 }
 
+function geometryCacheKey(sessionId: string, context: PartStudioContext, tree: FeatureListResponse): string | undefined {
+  if (!tree.sourceMicroversion) return undefined;
+  return createHash("sha256").update(JSON.stringify([
+    sessionId,
+    context.server ?? env.ONSHAPE_BASE_URL,
+    context.documentId,
+    context.workspaceId,
+    context.elementId,
+    context.configuration ?? "",
+    tree.sourceMicroversion
+  ])).digest("hex");
+}
+
+function pruneGeometryCache(now = Date.now()): void {
+  for (const [key, entry] of geometryCache) {
+    if (now - entry.createdAt > 10 * 60_000) geometryCache.delete(key);
+  }
+  while (geometryCache.size > 100) {
+    const oldest = geometryCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    geometryCache.delete(oldest);
+  }
+}
+
 const planRequestSchema = z.object({
   prompt: z.string().trim().min(3).max(4_000),
   context: z.unknown()
@@ -131,10 +158,22 @@ async function createStoredPlan(
   recoveryForPlanId?: string
 ): Promise<StoredCadPlan> {
   const client = clientFor(session, body.context);
-  const inspection = await client.inspectPartStudio(body.context);
+  const featureTree = await client.listFeatures(body.context);
+  pruneGeometryCache();
+  const cacheKey = geometryCacheKey(session.id, body.context, featureTree);
+  const cachedGeometry = cacheKey ? geometryCache.get(cacheKey)?.evidence : undefined;
+  const inspection = await client.inspectPartStudio(body.context, featureTree, cachedGeometry);
+  if (cacheKey && !cachedGeometry && inspection.warnings.length === 0) {
+    const evidence: PartStudioGeometryEvidence = {
+      ...(inspection.bodyDetails !== undefined ? { bodyDetails: inspection.bodyDetails } : {}),
+      ...(inspection.massProperties !== undefined ? { massProperties: inspection.massProperties } : {}),
+      ...(inspection.topologyEvaluation !== undefined ? { topologyEvaluation: inspection.topologyEvaluation } : {}),
+      warnings: []
+    };
+    if (JSON.stringify(evidence).length <= 750_000) geometryCache.set(cacheKey, { createdAt: Date.now(), evidence });
+  }
   const planning = await workers.forUser(session.id).createPlan(body.prompt, inspection);
   const plan = cadPlanSchema.parse(planning.plan);
-  const featureTree = inspection.featureTree;
   validatePlanAgainstFeatureTree(plan, featuresWithHashes(featureTree.features));
   if (body.context.configuration && plan.operations.some((operation) => operation.type === "update_dimension")) {
     throw new HttpError(409, "Dimension edits in configured Part Studios are not supported yet. Rename operations remain available.");
@@ -674,10 +713,11 @@ app.post("/api/plans/:id/apply", async (request, reply) => {
   plan.status = "applying";
   saveSession(session);
   let preexistingRegenerationErrors: RegenerationError[];
+  let currentTree: FeatureListResponse;
   try {
-    const currentTree = await client.listFeatures(plan.context);
+    currentTree = await client.listFeatures(plan.context);
     validatePlanAgainstFeatureTree(plan, featuresWithHashes(currentTree.features));
-    preexistingRegenerationErrors = await client.inspectRegenerationErrors(plan.context);
+    preexistingRegenerationErrors = client.regenerationErrors(currentTree);
   } catch (error) {
     plan.status = "pending";
     saveSession(session);
@@ -691,8 +731,11 @@ app.post("/api/plans/:id/apply", async (request, reply) => {
 
   for (const [index, operation] of plan.operations.entries()) {
     try {
-      const message = await client.applyOperation(plan.context, operation);
-      const currentErrors = await client.inspectRegenerationErrors(plan.context).catch((error) => [{
+      const message = await client.applyOperation(plan.context, operation, currentTree);
+      const currentErrors = await client.listFeatures(plan.context).then((tree) => {
+        currentTree = tree;
+        return client.regenerationErrors(tree);
+      }).catch((error) => [{
         featureId: "unknown",
         featureName: "Regeneration check",
         status: "CHECK_FAILED",

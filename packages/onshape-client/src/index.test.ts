@@ -38,6 +38,33 @@ describe("Onshape OAuth", () => {
 });
 
 describe("Onshape feature edits", () => {
+  it("honors a short Retry-After response and retries a throttled endpoint", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: "slow down" }), {
+        status: 429,
+        headers: { "content-type": "application/json", "retry-after": "0", "x-rate-limit-remaining": "0" }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ features: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new OnshapeClient({ accessToken: () => "token" });
+    await expect(client.listFeatures({ documentId: "d", workspaceId: "w", elementId: "e" }))
+      .resolves.toMatchObject({ features: [] });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports Onshape's wait time when the rate-limit window is too long for an inline retry", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: "slow down" }), {
+      status: 429,
+      headers: { "content-type": "application/json", "retry-after": "450", "x-rate-limit-remaining": "0" }
+    })));
+    const client = new OnshapeClient({ accessToken: () => "token" });
+    await expect(client.listFeatures({ documentId: "d", workspaceId: "w", elementId: "e" }))
+      .rejects.toThrow("retry in 450 seconds");
+  });
+
   it("builds explicit upstream and downstream feature dependencies", () => {
     const graph = buildFeatureDependencyGraph({
       features: [{
