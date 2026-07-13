@@ -295,6 +295,22 @@ await app.register(cors, {
   origin: env.APP_ORIGIN ?? (env.NODE_ENV === "development" ? true : false),
   credentials: true
 });
+app.addHook("onSend", async (request, reply, payload) => {
+  const privateNetworkPreflight = request.headers["access-control-request-private-network"];
+  if (
+    request.method === "OPTIONS"
+    && privateNetworkPreflight === "true"
+    && env.APP_ORIGIN
+    && request.headers.origin === env.APP_ORIGIN
+  ) {
+    // Chrome's Private Network Access preflight is triggered when the public
+    // Netlify panel reaches a personal Tailscale Funnel address. Without this
+    // opt-in the browser reports only a generic `Failed to fetch`, even though
+    // the normal CORS preflight and Funnel health check both succeed.
+    reply.header("access-control-allow-private-network", "true");
+  }
+  return payload;
+});
 await app.register(helmet, {
   crossOriginEmbedderPolicy: false,
   crossOriginOpenerPolicy: false,

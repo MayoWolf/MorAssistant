@@ -9,7 +9,8 @@ Current panel origin: `https://morassistant-onshape.netlify.app`
 ```text
 Onshape iframe
   -> Netlify HTTPS panel
-  -> credentialed HTTPS API requests
+  -> same-origin /api requests
+  -> Netlify HTTPS proxy
   -> persistent Fastify container
   -> Onshape OAuth/API + per-user Codex app-server
 ```
@@ -23,16 +24,19 @@ The root `netlify.toml` configures:
 - build command: `npm run build -w @morassistant/onshape-panel`
 - publish directory: `apps/onshape-panel/dist`
 - Node.js 22
+- a same-origin `/api/*` proxy to the personal Funnel backend
 - iframe-compatible CSP and security headers
 - immutable caching for hashed assets
 
-Set this build environment variable after the API has a public origin:
+The checked-in personal deployment keeps the browser on the public panel origin:
 
 ```text
-VITE_API_ORIGIN=https://api.your-domain.example
+VITE_API_ORIGIN=https://morassistant-onshape.netlify.app
 ```
 
-Until that variable is set, the panel makes same-origin API calls. A static-only preview will render correctly but cannot complete OAuth or planning.
+The matching `[[redirects]]` rule proxies `/api/*` to the Tailscale Funnel. This prevents Brave/Chromium from treating the request as public-to-private when Tailscale split DNS resolves the Funnel hostname to the Mac's `100.x` address. It also removes any dependency on a browser local-network permission prompt.
+
+Forks should replace the proxy destination and `VITE_API_ORIGIN` with their own panel and Funnel origins. Managed multi-user deployments can instead set `VITE_API_ORIGIN` directly to the managed API origin and remove the personal proxy rule.
 
 ## Backend settings
 
@@ -46,7 +50,7 @@ SESSION_DB_PATH=/data/morassistant.sqlite
 CODEX_USERS_ROOT=/data/codex-users
 ```
 
-For the single-user zero-cost deployment, run the backend through Tailscale Funnel as described in [Personal deployment with Tailscale Funnel](personal-tailscale-deployment.md), then use that printed HTTPS origin for `VITE_API_ORIGIN`.
+For the single-user zero-cost deployment, run the backend through Tailscale Funnel as described in [Personal deployment with Tailscale Funnel](personal-tailscale-deployment.md), then use that printed HTTPS origin as the `to` destination in Netlify's `/api/*` proxy rule.
 
 The personal deployment also sets `INSTALLATION_TOKEN` only on the backend. Never put it in a `VITE_` environment variable. Add it to the private Onshape OAuth URL and to the extension action URL fragment as documented in the personal deployment guide; the fragment is consumed in the browser and is not sent to Netlify.
 

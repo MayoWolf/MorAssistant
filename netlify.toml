@@ -4,6 +4,16 @@
 
 [build.environment]
   NODE_VERSION = "22"
+  # Keep browser requests on the iframe's public origin. Netlify proxies the
+  # API path to Funnel below, avoiding private-network checks when Tailscale's
+  # split DNS resolves the Funnel hostname to this Mac's 100.x address.
+  VITE_API_ORIGIN = "https://morassistant-onshape.netlify.app"
+
+[[redirects]]
+  from = "/api/*"
+  to = "https://macbook-air-2.tail8def8b.ts.net/api/:splat"
+  status = 200
+  force = true
 
 [[headers]]
   for = "/*"

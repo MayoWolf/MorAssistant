@@ -104,11 +104,23 @@ describe("installed Onshape extension pipeline", () => {
       headers: {
         origin: appOrigin,
         "access-control-request-method": "GET",
-        "access-control-request-headers": "x-mor-installation"
+        "access-control-request-headers": "x-mor-installation",
+        "access-control-request-private-network": "true"
       }
     });
     expect(installationPreflight.status).toBe(204);
     expect(installationPreflight.headers.get("access-control-allow-headers")).toContain("x-mor-installation");
+    expect(installationPreflight.headers.get("access-control-allow-private-network")).toBe("true");
+
+    const untrustedPrivateNetworkPreflight = await fetch(`${appOrigin}/api/status`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://untrusted.example",
+        "access-control-request-method": "GET",
+        "access-control-request-private-network": "true"
+      }
+    });
+    expect(untrustedPrivateNetworkPreflight.headers.get("access-control-allow-private-network")).toBeNull();
 
     const deniedStart = await fetch(`${appOrigin}/oauth/onshape/start?installationToken=${installationToken}`, { redirect: "manual" });
     const deniedState = new URL(deniedStart.headers.get("location")!).searchParams.get("state");
