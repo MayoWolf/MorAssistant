@@ -338,7 +338,7 @@ export class OnshapeClient {
 
   constructor(private readonly options: OnshapeClientOptions) {
     this.baseUrl = (options.baseUrl ?? "https://cad.onshape.com").replace(/\/$/, "");
-    this.apiVersion = options.apiVersion ?? "v15";
+    this.apiVersion = options.apiVersion ?? "v16";
   }
 
   private async request<T>(path: string, init: RequestInit = {}, retryAuth = true, rateLimitAttempt = 0): Promise<T> {

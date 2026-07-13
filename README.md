@@ -113,7 +113,7 @@ The complete Developer Portal configuration and private-install test are in [doc
 | Evaluate FeatureScript for geometry analysis | ✅ | Read-only lambda evaluation; no persistent mutation |
 | Self-correct an invalid generated plan | ✅ | Up to three schema + live feature-tree validation passes |
 | Create rectangle and square sketches on Top | ✅ | Typed millimeter geometry, unique names, captured v15 payload fixture |
-| Create any standard native Part Studio feature | ✅ Beta | Bounded BTM payload, ordered feature-name references, Onshape v15 validation |
+| Create any standard native Part Studio feature | ✅ Beta | Bounded BTM payload, ordered feature-name references, current Onshape API validation |
 | Replace a complete existing feature | ✅ Beta | Exact SHA-256 snapshot match plus microversion guard |
 | Delete an existing feature | ✅ | Exact ID/name match, high-risk preview, explicit approval |
 | Rename existing features | ✅ | Exact feature ID and current-name match |
