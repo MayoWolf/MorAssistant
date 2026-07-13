@@ -239,6 +239,7 @@ function isSupportedOnshapeOrigin(origin: string): boolean {
 
 function parseContext(input: unknown): PartStudioContext {
   const context = contextSchema.parse(input);
+  const configuration = context.configuration?.trim();
   if (context.server) {
     let serverOrigin: string;
     try {
@@ -255,7 +256,7 @@ function parseContext(input: unknown): PartStudioContext {
     workspaceId: context.workspaceId,
     elementId: context.elementId,
     ...(context.workspaceOrVersion ? { workspaceOrVersion: context.workspaceOrVersion } : {}),
-    ...(context.configuration ? { configuration: context.configuration } : {}),
+    ...(configuration && configuration.toLowerCase() !== "default" ? { configuration } : {}),
     ...(context.server ? { server: new URL(context.server).origin } : {})
   };
 }
