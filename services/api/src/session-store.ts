@@ -4,7 +4,18 @@ import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import { z } from "zod";
 import type { StoredCadPlan } from "@morassistant/cad-command-schema";
-import type { OnshapeTokens } from "@morassistant/onshape-client";
+import type {
+  FeatureListResponse,
+  OnshapeTokens,
+  PartStudioGeometryEvidence
+} from "@morassistant/onshape-client";
+
+export interface PartStudioSnapshot {
+  contextKey: string;
+  capturedAt: number;
+  tree: FeatureListResponse;
+  geometry?: PartStudioGeometryEvidence;
+}
 
 export interface UserSession {
   id: string;
@@ -16,6 +27,7 @@ export interface UserSession {
   codexLoginId?: string;
   codexConnected?: boolean;
   plans: Map<string, StoredCadPlan>;
+  partStudioSnapshots: Map<string, PartStudioSnapshot>;
 }
 
 const onshapeTokensSchema = z.object({
@@ -35,12 +47,32 @@ const persistedPlanSchema = z.object({
   warnings: z.array(z.unknown())
 }).passthrough();
 
+const featureListResponseSchema = z.object({
+  features: z.array(z.object({ featureId: z.string() }).passthrough()).max(2_000),
+  featureStates: z.unknown().optional(),
+  serializationVersion: z.string().optional(),
+  sourceMicroversion: z.string().optional()
+}).passthrough();
+
+const partStudioSnapshotSchema = z.object({
+  contextKey: z.string().regex(/^[a-f0-9]{64}$/u),
+  capturedAt: z.number().int().nonnegative(),
+  tree: featureListResponseSchema,
+  geometry: z.object({
+    bodyDetails: z.unknown().optional(),
+    massProperties: z.unknown().optional(),
+    topologyEvaluation: z.unknown().optional(),
+    warnings: z.array(z.string()).max(20)
+  }).strict().optional()
+}).strict();
+
 const persistedSessionSchema = z.object({
   onshapeTokens: onshapeTokensSchema.optional(),
   onshapeState: z.string().optional(),
   onshapeRedirectUri: z.string().optional(),
   codexConnected: z.boolean().optional(),
-  plans: z.array(persistedPlanSchema)
+  plans: z.array(persistedPlanSchema),
+  partStudioSnapshots: z.array(partStudioSnapshotSchema).max(20).optional()
 }).strict();
 
 interface SessionRow {
@@ -115,7 +147,12 @@ export class SessionStore {
   }
 
   create(id: string): UserSession {
-    const session: UserSession = { id, lastTouchedAt: Date.now(), plans: new Map() };
+    const session: UserSession = {
+      id,
+      lastTouchedAt: Date.now(),
+      plans: new Map(),
+      partStudioSnapshots: new Map()
+    };
     this.save(session);
     return session;
   }
@@ -130,6 +167,10 @@ export class SessionStore {
       id,
       lastTouchedAt: row.updated_at,
       plans: new Map(plans.map((plan) => [plan.id, plan])),
+      partStudioSnapshots: new Map((persisted.partStudioSnapshots ?? []).map((snapshot) => [
+        snapshot.contextKey,
+        snapshot as PartStudioSnapshot
+      ])),
       ...(persisted.onshapeTokens ? { onshapeTokens: persisted.onshapeTokens } : {}),
       ...(persisted.onshapeState ? { onshapeState: persisted.onshapeState } : {}),
       ...(persisted.onshapeRedirectUri ? { onshapeRedirectUri: persisted.onshapeRedirectUri } : {}),
@@ -145,7 +186,8 @@ export class SessionStore {
       ...(session.onshapeState ? { onshapeState: session.onshapeState } : {}),
       ...(session.onshapeRedirectUri ? { onshapeRedirectUri: session.onshapeRedirectUri } : {}),
       ...(session.codexConnected ? { codexConnected: true } : {}),
-      plans: [...session.plans.values()]
+      plans: [...session.plans.values()],
+      partStudioSnapshots: [...session.partStudioSnapshots.values()]
     });
     const now = Date.now();
     this.database.prepare(`

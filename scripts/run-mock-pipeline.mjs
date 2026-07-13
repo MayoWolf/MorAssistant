@@ -14,6 +14,7 @@ const codexHome = await mkdtemp(`${tmpdir()}/morassistant-e2e-`);
 
 let microversion = 1;
 let sketchCounter = 0;
+let rateLimitFeatureReads = false;
 const sketches = [];
 let feature = {
   btType: "BTMFeature-134",
@@ -58,10 +59,22 @@ const onshape = createServer(async (request, response) => {
   if (request.method === "GET" && url.pathname === "/__state") {
     return json(response, 200, { feature, sketches, microversion });
   }
+  if (request.method === "POST" && url.pathname === "/__feature-rate-limit") {
+    rateLimitFeatureReads = url.searchParams.get("enabled") !== "false";
+    return json(response, 200, { enabled: rateLimitFeatureReads });
+  }
   if (!request.headers.authorization?.startsWith("Bearer mock-")) {
     return json(response, 401, { message: "missing mock bearer token" });
   }
   if (request.method === "GET" && /\/api\/v13\/partstudios\/d\/[^/]+\/w\/[^/]+\/e\/[^/]+\/features$/.test(url.pathname)) {
+    if (rateLimitFeatureReads) {
+      response.writeHead(429, {
+        "content-type": "application/json",
+        "retry-after": "3600",
+        "x-rate-limit-remaining": "0"
+      });
+      return response.end(JSON.stringify({ message: "mock feature-list rate limit" }));
+    }
     return json(response, 200, {
       btType: "BTFeatureListResponse-2457",
       serializationVersion: "1.2.4",
@@ -104,7 +117,9 @@ const onshape = createServer(async (request, response) => {
     microversion += 1;
     return json(response, 200, {
       feature,
-      featureState: { featureStatus: "OK", inactive: false },
+      featureState: feature.name === "Broken Base"
+        ? { featureStatus: "ERROR", message: "Deterministic regeneration fixture failure", inactive: false }
+        : { featureStatus: "OK", inactive: false },
       serializationVersion: "1.2.4",
       sourceMicroversion: `m${microversion}`,
       microversionSkew: false
@@ -159,6 +174,7 @@ const api = spawn(process.execPath, [resolve(root, "services/api/dist/server.js"
     ONSHAPE_TOKEN_URL: `${onshapeOrigin}/oauth/token`,
     ONSHAPE_BASE_URL: onshapeOrigin,
     ONSHAPE_API_VERSION: "v13",
+    ONSHAPE_SNAPSHOT_FRESH_MS: "0",
     CODEX_COMMAND: resolve(root, "scripts/fake-codex-app-server.mjs"),
     CODEX_USERS_ROOT: codexHome
   },

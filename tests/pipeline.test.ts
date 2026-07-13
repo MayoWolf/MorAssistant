@@ -390,6 +390,43 @@ describe("installed Onshape extension pipeline", () => {
     };
     expect(recoveredState.feature.name).toBe("Recovered Base");
     expect(recoveredState.microversion).toBe(12);
+
+    const enableFeatureRateLimit = await fetch(`${onshapeOrigin}/__feature-rate-limit`, { method: "POST" });
+    expect(enableFeatureRateLimit.status).toBe(200);
+    const throttledPlanResponse = await fetch(`${appOrigin}/api/plans`, {
+      method: "POST",
+      headers: sessionHeaders({ origin: appOrigin, "content-type": "application/json" }),
+      body: JSON.stringify({ prompt: "Rename through the rate limit fallback", context })
+    });
+    expect(throttledPlanResponse.status).toBe(201);
+    const throttledPlan = await throttledPlanResponse.json() as {
+      id: string;
+      sourceMicroversion?: string;
+      agentTrace?: { inspectionWarnings: string[] };
+    };
+    expect(throttledPlan.sourceMicroversion).toBe("m12");
+    expect(throttledPlan.agentTrace?.inspectionWarnings.join(" ")).toMatch(/rate-limited/i);
+
+    const throttledApply = await fetch(`${appOrigin}/api/plans/${throttledPlan.id}/apply`, {
+      method: "POST",
+      headers: sessionHeaders({ origin: appOrigin })
+    });
+    expect(throttledApply.status).toBe(200);
+    expect(await throttledApply.json()).toMatchObject({
+      status: "applied",
+      result: {
+        regenerationErrors: [],
+        operations: [{ status: "applied", verification: "passed" }]
+      }
+    });
+    const throttledState = await fetch(`${onshapeOrigin}/__state`).then((response) => response.json()) as {
+      feature: { name: string };
+      microversion: number;
+    };
+    expect(throttledState.feature.name).toBe("Recovered Base refined");
+    expect(throttledState.microversion).toBe(13);
+    const disableFeatureRateLimit = await fetch(`${onshapeOrigin}/__feature-rate-limit?enabled=false`, { method: "POST" });
+    expect(disableFeatureRateLimit.status).toBe(200);
   }, 20_000);
 
   it("rejects version contexts and unexpected Onshape stacks", async () => {

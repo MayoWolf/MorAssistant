@@ -96,6 +96,11 @@ export interface FeatureUpdateConcurrency {
   sourceMicroversion?: string;
 }
 
+export interface AppliedOperation {
+  message: string;
+  response: unknown;
+}
+
 export function featureFingerprint(feature: Record<string, unknown>): string {
   return createHash("sha256").update(JSON.stringify(feature)).digest("hex");
 }
@@ -536,24 +541,27 @@ export class OnshapeClient {
     );
   }
 
-  async applyOperation(
+  async applyOperationDetailed(
     context: PartStudioContext,
     operation: CadOperation,
     featureTree?: FeatureListResponse
-  ): Promise<string> {
+  ): Promise<AppliedOperation> {
     const tree = featureTree ?? await this.listFeatures(context);
     if (operation.type === "create_rectangle_sketch") {
       if (tree.features.some((feature) => feature.name?.toLocaleLowerCase() === operation.sketchName.toLocaleLowerCase())) {
         throw new Error(`A feature named ${operation.sketchName} already exists.`);
       }
-      await this.addFeature(context, buildRectangleSketchFeature({
+      const response = await this.addFeature(context, buildRectangleSketchFeature({
         name: operation.sketchName,
         widthMm: operation.widthMm,
         heightMm: operation.heightMm,
         centerXmm: operation.centerXmm,
         centerYmm: operation.centerYmm
       }), tree);
-      return `Created ${operation.sketchName}: ${operation.widthMm} mm × ${operation.heightMm} mm on the Top plane.`;
+      return {
+        message: `Created ${operation.sketchName}: ${operation.widthMm} mm × ${operation.heightMm} mm on the Top plane.`,
+        response
+      };
     }
 
     if (operation.type === "create_feature") {
@@ -563,8 +571,8 @@ export class OnshapeClient {
       const feature = canonicalizeFeaturePayload(
         resolveFeatureReferences(parseFeatureJson(operation.featureJson), tree.features) as Record<string, unknown>
       );
-      await this.addFeature(context, feature, tree);
-      return `Created ${operation.featureName} (${operation.featureType}).`;
+      const response = await this.addFeature(context, feature, tree);
+      return { message: `Created ${operation.featureName} (${operation.featureType}).`, response };
     }
 
     const original = tree.features.find((feature) => feature.featureId === operation.featureId);
@@ -572,8 +580,8 @@ export class OnshapeClient {
 
     if (operation.type === "delete_feature") {
       if (original.name !== operation.currentName) throw new Error(`Feature ${operation.featureId} has changed since preview.`);
-      await this.deleteFeature(context, operation.featureId);
-      return `Deleted ${operation.currentName}.`;
+      const response = await this.deleteFeature(context, operation.featureId);
+      return { message: `Deleted ${operation.currentName}.`, response };
     }
 
     if (operation.type === "replace_feature") {
@@ -586,8 +594,8 @@ export class OnshapeClient {
         ),
         featureId: operation.featureId
       } as OnshapeFeature;
-      await this.updateFeature(context, replacement, tree);
-      return `Updated ${operation.currentName} as ${operation.featureType}.`;
+      const response = await this.updateFeature(context, replacement, tree);
+      return { message: `Updated ${operation.currentName} as ${operation.featureType}.`, response };
     }
 
     const feature = structuredClone(original);
@@ -595,8 +603,8 @@ export class OnshapeClient {
     if (operation.type === "rename_feature") {
       if (feature.name !== operation.currentName) throw new Error(`Feature ${operation.featureId} has changed since preview.`);
       feature.name = operation.newName;
-      await this.updateFeature(context, feature, tree);
-      return `Renamed ${operation.currentName} to ${operation.newName}.`;
+      const response = await this.updateFeature(context, feature, tree);
+      return { message: `Renamed ${operation.currentName} to ${operation.newName}.`, response };
     }
 
     const parameter = feature.parameters?.find((candidate) => candidate.parameterId === operation.parameterId);
@@ -605,8 +613,16 @@ export class OnshapeClient {
       throw new Error(`Parameter ${operation.parameterId} has changed since preview.`);
     }
     parameter.expression = operation.newExpression;
-    await this.updateFeature(context, feature, tree);
-    return `Changed ${operation.featureName}.${operation.parameterId} to ${operation.newExpression}.`;
+    const response = await this.updateFeature(context, feature, tree);
+    return { message: `Changed ${operation.featureName}.${operation.parameterId} to ${operation.newExpression}.`, response };
+  }
+
+  async applyOperation(
+    context: PartStudioContext,
+    operation: CadOperation,
+    featureTree?: FeatureListResponse
+  ): Promise<string> {
+    return (await this.applyOperationDetailed(context, operation, featureTree)).message;
   }
 
   async inspectRegenerationErrors(context: PartStudioContext): Promise<RegenerationError[]> {

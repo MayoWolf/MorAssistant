@@ -76,7 +76,9 @@ The geometry probe is a FeatureScript lambda evaluated by Onshape against the cu
 
 Body-detail and mass-property calls are best-effort. If Onshape cannot calculate one source—for example, an empty Part Studio or a part with missing material density—feature-level planning remains available and the missing evidence is recorded in the plan trace.
 
-Geometry evidence is cached in memory by user, element, configuration, and exact source microversion for ten minutes. Repeated prompts against an unchanged model therefore need only one fresh feature-tree read. The cache is bounded, never persisted, and cannot cross users. Onshape `429` responses honor `Retry-After` for short windows; longer windows return the requested wait time instead of an opaque API failure.
+Geometry evidence is cached in memory by user, element, configuration, and exact source microversion for ten minutes. The last verified feature tree and bounded geometry evidence are also persisted inside the session's AES-256-GCM encrypted payload. Repeated prompts against an unchanged model therefore avoid expensive geometry reads, and a backend restart does not discard the verified fallback. The cache is bounded and cannot cross users.
+
+Onshape `429` responses honor `Retry-After` for short windows. During a longer feature-list throttle, planning may use the last verified snapshot and records that fact in the preview. Apply remains guarded by the snapshot's exact source microversion and `rejectMicroversionSkew: true`. When Onshape accepts a mutation, its response supplies the new feature, feature state, serialization version, and source microversion; MorAssistant can safely advance the encrypted snapshot and continue per-operation verification without inventing state.
 
 ## 2. Planning and bounded self-repair
 
@@ -189,6 +191,6 @@ MorAssistant's broad native fallback is intentionally scoped to the active **wor
 
 ## Verification
 
-`npm run check` type-checks and builds every workspace, then runs unit and full-pipeline tests. The deterministic pipeline covers OAuth, Codex sign-in, dependency/geometry inspection, invalid-plan self-repair, approval, native mutation, microversion guards, per-operation rebuild verification, fail-fast behavior, and separately approved recovery.
+`npm run check` type-checks and builds every workspace, then runs unit and full-pipeline tests. The deterministic pipeline covers OAuth, Codex sign-in, dependency/geometry inspection, invalid-plan self-repair, approval, native mutation, microversion guards, per-operation rebuild verification, encrypted snapshot persistence, a forced `429` planning-and-apply fallback, fail-fast behavior, and separately approved recovery.
 
 The mock services never contact a real Onshape document or OpenAI account. A production release still requires the live Onshape App Store matrix in [app-store-release-checklist.md](app-store-release-checklist.md).

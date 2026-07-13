@@ -165,7 +165,8 @@ The model never receives an Onshape OAuth token, never sends arbitrary REST requ
 - **Current-state validation** — feature names, parameter expressions, and Onshape concurrency metadata must still match.
 - **Per-operation verification** — execution stops on the first operation that introduces a new regeneration error.
 - **Approval-gated recovery** — a failed run can generate an alternate plan from the refreshed model, but cannot apply it automatically.
-- **Rate-aware inspection** — unchanged-microversion geometry evidence is cached, duplicate feature-tree reads are avoided during apply, and short Onshape `Retry-After` windows are honored automatically.
+- **Rate-aware inspection** — unchanged-microversion geometry evidence and verified feature snapshots are cached in encrypted storage, duplicate reads are avoided, and Onshape `Retry-After` windows are honored automatically.
+- **Throttle-safe continuation** — if Onshape throttles feature-list reads, planning uses the last verified snapshot and approved mutations retain `rejectMicroversionSkew: true`; successful mutation responses advance the guarded snapshot without guessing.
 - **Replay resistance** — pending plans transition atomically and cannot be applied twice.
 - **Origin checks** — state-changing browser requests must come from the configured panel origin.
 - **Minimum secrets exposure** — Codex child processes inherit a deliberately small environment with no backend OAuth secrets.

@@ -241,6 +241,7 @@ export interface StoredCadPlan extends CadPlan {
     };
     inspectionWarnings: string[];
   };
+  sourceMicroversion?: string;
   recoveryForPlanId?: string;
   result?: PlanExecutionResult;
 }

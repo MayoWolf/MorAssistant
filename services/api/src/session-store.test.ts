@@ -54,18 +54,32 @@ describe("encrypted persistent session store", () => {
     session.codexConnected = true;
     const plan = pendingPlan();
     session.plans.set(plan.id, plan);
+    session.partStudioSnapshots.set("a".repeat(64), {
+      contextKey: "a".repeat(64),
+      capturedAt: 1_752_400_000_000,
+      tree: {
+        features: [{ featureId: "feature-1", name: "Private snapshot feature" }],
+        sourceMicroversion: "microversion-1",
+        serializationVersion: "1.2.20"
+      }
+    });
     first.save(session);
     first.close();
 
     const databaseBytes = readFileSync(path).toString("utf8");
     expect(databaseBytes).not.toContain("sensitive-access-token");
     expect(databaseBytes).not.toContain("Rename one feature");
+    expect(databaseBytes).not.toContain("Private snapshot feature");
 
     const second = new SessionStore(path, secret);
     const restored = second.get("session-1");
     expect(restored?.onshapeTokens?.refreshToken).toBe("sensitive-refresh-token");
     expect(restored?.codexConnected).toBe(true);
     expect(restored?.plans.get(plan.id)).toMatchObject({ summary: "Rename one feature", status: "pending" });
+    expect(restored?.partStudioSnapshots.get("a".repeat(64))).toMatchObject({
+      capturedAt: 1_752_400_000_000,
+      tree: { sourceMicroversion: "microversion-1", features: [{ featureId: "feature-1" }] }
+    });
     second.close();
   });
 

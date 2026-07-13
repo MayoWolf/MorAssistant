@@ -12,6 +12,7 @@ import { z } from "zod";
 import {
   cadPlanSchema,
   validatePlanAgainstFeatureTree,
+  type CadOperation,
   type OperationExecutionResult,
   type RegenerationError,
   type StoredCadPlan
@@ -51,6 +52,7 @@ const envSchema = z.object({
   ONSHAPE_TOKEN_URL: z.string().url().default("https://oauth.onshape.com/oauth/token"),
   ONSHAPE_BASE_URL: z.string().url().default("https://cad.onshape.com"),
   ONSHAPE_API_VERSION: z.string().default("v16"),
+  ONSHAPE_SNAPSHOT_FRESH_MS: z.coerce.number().int().min(0).max(3_600_000).default(5 * 60_000),
   CODEX_MODEL: z.string().min(1).optional(),
   CODEX_COMMAND: z.string().default("codex"),
   CODEX_USERS_ROOT: z.string().default(resolve(repositoryRoot, "data/codex-users")),
@@ -131,6 +133,109 @@ function geometryCacheKey(sessionId: string, context: PartStudioContext, tree: F
   ])).digest("hex");
 }
 
+function partStudioSnapshotKey(context: PartStudioContext): string {
+  return createHash("sha256").update(JSON.stringify([
+    context.server ?? env.ONSHAPE_BASE_URL,
+    env.ONSHAPE_API_VERSION,
+    context.documentId,
+    context.workspaceId,
+    context.elementId,
+    context.configuration ?? ""
+  ])).digest("hex");
+}
+
+function isOnshapeRateLimit(error: unknown): error is OnshapeApiError {
+  return error instanceof OnshapeApiError && error.status === 429;
+}
+
+function geometryEvidence(inspection: {
+  bodyDetails?: unknown;
+  massProperties?: unknown;
+  topologyEvaluation?: unknown;
+  warnings: string[];
+}): PartStudioGeometryEvidence {
+  return {
+    ...(inspection.bodyDetails !== undefined ? { bodyDetails: inspection.bodyDetails } : {}),
+    ...(inspection.massProperties !== undefined ? { massProperties: inspection.massProperties } : {}),
+    ...(inspection.topologyEvaluation !== undefined ? { topologyEvaluation: inspection.topologyEvaluation } : {}),
+    warnings: inspection.warnings
+  };
+}
+
+function storePartStudioSnapshot(
+  session: UserSession,
+  contextKey: string,
+  tree: FeatureListResponse,
+  geometry?: PartStudioGeometryEvidence
+): void {
+  if (!tree.sourceMicroversion || JSON.stringify(tree).length > 2_000_000) return;
+  const existing = session.partStudioSnapshots.get(contextKey);
+  const reusableGeometry = existing?.tree.sourceMicroversion === tree.sourceMicroversion
+    ? existing.geometry
+    : undefined;
+  const candidateGeometry = geometry ?? reusableGeometry;
+  const safeGeometry = candidateGeometry && JSON.stringify(candidateGeometry).length <= 750_000
+    ? candidateGeometry
+    : undefined;
+  session.partStudioSnapshots.delete(contextKey);
+  session.partStudioSnapshots.set(contextKey, {
+    contextKey,
+    capturedAt: Date.now(),
+    tree,
+    ...(safeGeometry ? { geometry: safeGeometry } : {})
+  });
+  while (session.partStudioSnapshots.size > 20) {
+    const oldestKey = session.partStudioSnapshots.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    session.partStudioSnapshots.delete(oldestKey);
+  }
+}
+
+function responseRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function treeFromMutationResponse(
+  tree: FeatureListResponse,
+  operation: CadOperation,
+  response: unknown
+): FeatureListResponse | undefined {
+  const result = responseRecord(response);
+  const sourceMicroversion = result?.sourceMicroversion;
+  if (!result || typeof sourceMicroversion !== "string" || sourceMicroversion.length === 0) return undefined;
+
+  let features = structuredClone(tree.features);
+  const returnedFeature = responseRecord(result.feature) as OnshapeFeature | undefined;
+  if (operation.type === "create_rectangle_sketch" || operation.type === "create_feature") {
+    if (!returnedFeature || typeof returnedFeature.featureId !== "string") return undefined;
+    features.push(returnedFeature);
+  } else if (operation.type === "delete_feature") {
+    features = features.filter((feature) => feature.featureId !== operation.featureId);
+  } else {
+    if (!returnedFeature || typeof returnedFeature.featureId !== "string") return undefined;
+    const index = features.findIndex((feature) => feature.featureId === operation.featureId);
+    if (index < 0) return undefined;
+    features[index] = returnedFeature;
+  }
+
+  const featureStates = responseRecord(structuredClone(tree.featureStates)) ?? {};
+  if (operation.type === "delete_feature") {
+    delete featureStates[operation.featureId];
+  } else if (returnedFeature) {
+    const returnedState = responseRecord(result.featureState);
+    if (returnedState) featureStates[returnedFeature.featureId] = returnedState;
+  }
+  return {
+    ...structuredClone(tree),
+    features,
+    featureStates,
+    sourceMicroversion,
+    ...(typeof result.serializationVersion === "string" ? { serializationVersion: result.serializationVersion } : {})
+  };
+}
+
 function pruneGeometryCache(now = Date.now()): void {
   for (const [key, entry] of geometryCache) {
     if (now - entry.createdAt > 10 * 60_000) geometryCache.delete(key);
@@ -158,19 +263,44 @@ async function createStoredPlan(
   recoveryForPlanId?: string
 ): Promise<StoredCadPlan> {
   const client = clientFor(session, body.context);
-  const featureTree = await client.listFeatures(body.context);
+  const snapshotKey = partStudioSnapshotKey(body.context);
+  const storedSnapshot = session.partStudioSnapshots.get(snapshotKey);
+  let usedStoredSnapshot = false;
+  let rateLimitFallback = false;
+  let featureTree: FeatureListResponse;
+  if (storedSnapshot && Date.now() - storedSnapshot.capturedAt <= env.ONSHAPE_SNAPSHOT_FRESH_MS) {
+    featureTree = storedSnapshot.tree;
+    usedStoredSnapshot = true;
+  } else {
+    try {
+      featureTree = await client.listFeatures(body.context);
+    } catch (error) {
+      if (!isOnshapeRateLimit(error) || !storedSnapshot) throw error;
+      featureTree = storedSnapshot.tree;
+      usedStoredSnapshot = true;
+      rateLimitFallback = true;
+    }
+  }
   pruneGeometryCache();
   const cacheKey = geometryCacheKey(session.id, body.context, featureTree);
-  const cachedGeometry = cacheKey ? geometryCache.get(cacheKey)?.evidence : undefined;
-  const inspection = await client.inspectPartStudio(body.context, featureTree, cachedGeometry);
+  const memoryGeometry = cacheKey ? geometryCache.get(cacheKey)?.evidence : undefined;
+  const persistedGeometry = storedSnapshot?.tree.sourceMicroversion === featureTree.sourceMicroversion
+    ? storedSnapshot?.geometry
+    : undefined;
+  const cachedGeometry = memoryGeometry ?? persistedGeometry;
+  const rawInspection = await client.inspectPartStudio(body.context, featureTree, cachedGeometry);
+  const snapshotWarning = rateLimitFallback
+    ? `Onshape feature-list reads are temporarily rate-limited. Planning used the last encrypted, verified snapshot from ${new Date(storedSnapshot!.capturedAt).toLocaleString("en-US", { timeZone: "UTC" })} UTC; execution will retain the snapshot's microversion guard.`
+    : undefined;
+  const inspection = snapshotWarning
+    ? { ...rawInspection, warnings: [...rawInspection.warnings, snapshotWarning] }
+    : rawInspection;
   if (cacheKey && !cachedGeometry && inspection.warnings.length === 0) {
-    const evidence: PartStudioGeometryEvidence = {
-      ...(inspection.bodyDetails !== undefined ? { bodyDetails: inspection.bodyDetails } : {}),
-      ...(inspection.massProperties !== undefined ? { massProperties: inspection.massProperties } : {}),
-      ...(inspection.topologyEvaluation !== undefined ? { topologyEvaluation: inspection.topologyEvaluation } : {}),
-      warnings: []
-    };
+    const evidence = geometryEvidence(inspection);
     if (JSON.stringify(evidence).length <= 750_000) geometryCache.set(cacheKey, { createdAt: Date.now(), evidence });
+  }
+  if (!usedStoredSnapshot || !storedSnapshot?.geometry) {
+    storePartStudioSnapshot(session, snapshotKey, featureTree, geometryEvidence(rawInspection));
   }
   const planning = await workers.forUser(session.id).createPlan(body.prompt, inspection);
   const plan = cadPlanSchema.parse(planning.plan);
@@ -192,6 +322,7 @@ async function createStoredPlan(
       geometry: planning.inspection.geometry,
       inspectionWarnings: planning.inspection.warnings
     },
+    ...(featureTree.sourceMicroversion ? { sourceMicroversion: featureTree.sourceMicroversion } : {}),
     ...(recoveryForPlanId ? { recoveryForPlanId } : {})
   };
   while (session.plans.size >= 100) {
@@ -710,12 +841,30 @@ app.post("/api/plans/:id/apply", async (request, reply) => {
   if (plan.status !== "pending") return reply.code(409).send({ error: `Plan is already ${plan.status}.` });
 
   const client = clientFor(session, plan.context);
+  const snapshotKey = partStudioSnapshotKey(plan.context);
   plan.status = "applying";
   saveSession(session);
   let preexistingRegenerationErrors: RegenerationError[];
   let currentTree: FeatureListResponse;
+  let usedStoredSnapshot = false;
   try {
-    currentTree = await client.listFeatures(plan.context);
+    const snapshot = session.partStudioSnapshots.get(snapshotKey);
+    const canUseGuardedSnapshot = Boolean(
+      snapshot
+      && plan.sourceMicroversion
+      && snapshot.tree.sourceMicroversion === plan.sourceMicroversion
+      && !plan.operations.some((operation) => operation.type === "delete_feature")
+    );
+    if (canUseGuardedSnapshot) {
+      currentTree = snapshot!.tree;
+      usedStoredSnapshot = true;
+    } else {
+      currentTree = await client.listFeatures(plan.context);
+      storePartStudioSnapshot(session, snapshotKey, currentTree);
+    }
+    if (plan.sourceMicroversion && currentTree.sourceMicroversion !== plan.sourceMicroversion) {
+      throw new Error("The Part Studio changed after the plan preview. Create a fresh plan before applying changes.");
+    }
     validatePlanAgainstFeatureTree(plan, featuresWithHashes(currentTree.features));
     preexistingRegenerationErrors = client.regenerationErrors(currentTree);
   } catch (error) {
@@ -731,16 +880,33 @@ app.post("/api/plans/:id/apply", async (request, reply) => {
 
   for (const [index, operation] of plan.operations.entries()) {
     try {
-      const message = await client.applyOperation(plan.context, operation, currentTree);
-      const currentErrors = await client.listFeatures(plan.context).then((tree) => {
-        currentTree = tree;
-        return client.regenerationErrors(tree);
-      }).catch((error) => [{
-        featureId: "unknown",
-        featureName: "Regeneration check",
-        status: "CHECK_FAILED",
-        message: error instanceof Error ? error.message : "Unable to check regeneration status."
-      }]);
+      const applied = await client.applyOperationDetailed(plan.context, operation, currentTree);
+      let verification: OperationExecutionResult["verification"] = "passed";
+      let verificationNote = "";
+      let currentErrors: RegenerationError[];
+      const responseTree = treeFromMutationResponse(currentTree, operation, applied.response);
+      if (responseTree) {
+        currentTree = responseTree;
+        storePartStudioSnapshot(session, snapshotKey, currentTree);
+        currentErrors = client.regenerationErrors(currentTree);
+        verificationNote = usedStoredSnapshot
+          ? " Onshape's mutation response supplied the new guarded microversion and regeneration state without another feature-list read."
+          : "";
+      } else {
+        try {
+          currentTree = await client.listFeatures(plan.context);
+          storePartStudioSnapshot(session, snapshotKey, currentTree);
+          currentErrors = client.regenerationErrors(currentTree);
+        } catch (error) {
+          verification = "not_run";
+          currentErrors = [{
+            featureId: "unknown",
+            featureName: "Regeneration check",
+            status: "CHECK_FAILED",
+            message: error instanceof Error ? error.message : "Unable to check regeneration status."
+          }];
+        }
+      }
       regenerationErrors = currentErrors.filter((item) => !preexistingKeys.has(
         `${item.featureId}\u0000${item.status}\u0000${item.message ?? ""}`
       ));
@@ -748,13 +914,21 @@ app.post("/api/plans/:id/apply", async (request, reply) => {
         operations.push({
           index,
           operation,
-          status: "failed",
-          verification: "failed",
-          message: `${message} Onshape regeneration then reported ${regenerationErrors.length} new error${regenerationErrors.length === 1 ? "" : "s"}; execution stopped.`
+          status: verification === "not_run" ? "applied" : "failed",
+          verification: verification === "not_run" ? "not_run" : "failed",
+          message: verification === "not_run"
+            ? `${applied.message} The change was accepted, but regeneration verification could not run; execution stopped before any later operation.`
+            : `${applied.message} Onshape regeneration then reported ${regenerationErrors.length} new error${regenerationErrors.length === 1 ? "" : "s"}; execution stopped.`
         });
         break;
       }
-      operations.push({ index, operation, status: "applied", verification: "passed", message });
+      operations.push({
+        index,
+        operation,
+        status: "applied",
+        verification,
+        message: `${applied.message}${verificationNote}`
+      });
     } catch (error) {
       operations.push({
         index,
@@ -767,7 +941,9 @@ app.post("/api/plans/:id/apply", async (request, reply) => {
     }
   }
 
-  const failed = operations.some((operation) => operation.status === "failed") || regenerationErrors.length > 0;
+  const failed = operations.length < plan.operations.length
+    || operations.some((operation) => operation.status === "failed")
+    || regenerationErrors.length > 0;
   plan.status = failed ? "failed" : "applied";
   plan.result = {
     status: plan.status,
