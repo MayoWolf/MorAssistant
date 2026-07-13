@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">MorAssistant Onshape copilot</title>
+  <desc id="desc">An emerald isometric wireframe cube with a small AI spark.</desc>
+  <rect width="512" height="512" rx="112" fill="#F3F5F1"/>
+  <path d="M112 337V171L256 88l144 83v166l-144 83-144-83Z" fill="#FBFCF9" stroke="#187A5A" stroke-width="28" stroke-linejoin="round"/>
+  <path d="m112 171 144 83 144-83M256 254v166M112 337l144-83 144 83" fill="none" stroke="#187A5A" stroke-width="24" stroke-linejoin="round"/>
+  <path d="M367 68c4 28 20 44 48 48-28 4-44 20-48 48-4-28-20-44-48-48 28-4 44-20 48-48Z" fill="#C6F26C" stroke="#0E5C42" stroke-width="12" stroke-linejoin="round"/>
+</svg>

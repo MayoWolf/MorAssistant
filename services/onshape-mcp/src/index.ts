@@ -1,0 +1,92 @@
+#!/usr/bin/env node
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+import { OnshapeClient } from "@morassistant/onshape-client";
+
+const accessToken = process.env.MOR_ONSHAPE_ACCESS_TOKEN;
+if (!accessToken) throw new Error("MOR_ONSHAPE_ACCESS_TOKEN is required.");
+
+const client = new OnshapeClient({
+  accessToken: () => accessToken,
+  ...(process.env.ONSHAPE_BASE_URL ? { baseUrl: process.env.ONSHAPE_BASE_URL } : {}),
+  ...(process.env.ONSHAPE_API_VERSION ? { apiVersion: process.env.ONSHAPE_API_VERSION } : {})
+});
+const server = new McpServer({ name: "morassistant-onshape", version: "0.1.0" });
+
+const contextShape = {
+  documentId: z.string().min(1).describe("Current Onshape document ID"),
+  workspaceId: z.string().min(1).describe("Current Onshape workspace ID"),
+  elementId: z.string().min(1).describe("Current Part Studio element ID")
+};
+
+server.registerTool("list_features", {
+  title: "List Part Studio features",
+  description: "Read the current feature tree. This does not modify the document.",
+  inputSchema: contextShape,
+  annotations: { readOnlyHint: true, destructiveHint: false }
+}, async (context) => {
+  const tree = await client.listFeatures(context);
+  const features = tree.features.map((feature) => ({
+    featureId: feature.featureId,
+    name: feature.name,
+    featureType: feature.featureType,
+    parameters: feature.parameters?.filter((parameter) => typeof parameter.expression === "string")
+      .map((parameter) => ({ parameterId: parameter.parameterId, expression: parameter.expression }))
+  }));
+  return { content: [{ type: "text", text: JSON.stringify({ features }) }], structuredContent: { features } };
+});
+
+server.registerTool("rename_feature", {
+  title: "Rename a Part Studio feature",
+  description: "Rename one existing feature, only if its current name still matches the preview.",
+  inputSchema: {
+    ...contextShape,
+    featureId: z.string().min(1),
+    currentName: z.string().min(1),
+    newName: z.string().trim().min(1).max(100)
+  },
+  annotations: { readOnlyHint: false, destructiveHint: false }
+}, async ({ featureId, currentName, newName, ...context }) => {
+  const message = await client.applyOperation(context, {
+    type: "rename_feature", featureId, currentName, newName, reason: "Approved MCP operation"
+  });
+  return { content: [{ type: "text", text: message }] };
+});
+
+server.registerTool("update_dimension", {
+  title: "Update a feature dimension",
+  description: "Change one quantity expression, only if the current expression still matches the preview.",
+  inputSchema: {
+    ...contextShape,
+    featureId: z.string().min(1),
+    featureName: z.string().min(1),
+    parameterId: z.string().min(1),
+    currentExpression: z.string().min(1),
+    newExpression: z.string().trim().min(1).max(100)
+  },
+  annotations: { readOnlyHint: false, destructiveHint: false }
+}, async ({ featureId, featureName, parameterId, currentExpression, newExpression, ...context }) => {
+  const message = await client.applyOperation(context, {
+    type: "update_dimension",
+    featureId,
+    featureName,
+    parameterId,
+    currentExpression,
+    newExpression,
+    reason: "Approved MCP operation"
+  });
+  return { content: [{ type: "text", text: message }] };
+});
+
+server.registerTool("inspect_regeneration_errors", {
+  title: "Inspect regeneration errors",
+  description: "Read failed or warning feature states after an edit.",
+  inputSchema: contextShape,
+  annotations: { readOnlyHint: true, destructiveHint: false }
+}, async (context) => {
+  const errors = await client.inspectRegenerationErrors(context);
+  return { content: [{ type: "text", text: JSON.stringify({ errors }) }], structuredContent: { errors } };
+});
+
+await server.connect(new StdioServerTransport());

@@ -1,0 +1,31 @@
+{
+  "name": "morassistant",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Approval-first Onshape CAD copilot powered by an isolated Codex app-server worker.",
+  "workspaces": [
+    "apps/*",
+    "services/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "predev": "npm run build -w @morassistant/shared-types -w @morassistant/cad-command-schema -w @morassistant/onshape-client -w @morassistant/codex-worker",
+    "dev": "concurrently -n api,panel -c cyan,magenta \"npm run dev -w @morassistant/api\" \"npm run dev -w @morassistant/onshape-panel\"",
+    "test": "npm run build && vitest run",
+    "test:watch": "vitest",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "check": "npm run typecheck && npm run build && vitest run",
+    "mock:pipeline": "npm run build && node scripts/run-mock-pipeline.mjs",
+    "mcp": "npm run start -w @morassistant/onshape-mcp"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "concurrently": "^9.2.1",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}

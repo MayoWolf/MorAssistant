@@ -1,0 +1,26 @@
+{
+  "name": "@morassistant/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.0.0",
+    "@fastify/cors": "^11.0.0",
+    "@fastify/helmet": "^13.1.0",
+    "@fastify/rate-limit": "^10.3.0",
+    "@fastify/static": "^10.1.0",
+    "@morassistant/cad-command-schema": "*",
+    "@morassistant/codex-worker": "*",
+    "@morassistant/onshape-client": "*",
+    "@morassistant/shared-types": "*",
+    "fastify": "^5.0.0",
+    "tsx": "^4.20.0",
+    "zod": "^4.0.0"
+  }
+}

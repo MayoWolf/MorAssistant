@@ -1,0 +1,18 @@
+{
+  "name": "@morassistant/onshape-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "morassistant-onshape-mcp": "dist/index.js" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.0",
+    "@morassistant/onshape-client": "*",
+    "tsx": "^4.20.0",
+    "zod": "^4.0.0"
+  }
+}
