@@ -216,9 +216,8 @@ export class CodexWorker {
     await this.start();
     const response = await this.request("account/read", { refreshToken: false }) as {
       account?: unknown;
-      requiresOpenaiAuth?: boolean;
     };
-    return response.account && !response.requiresOpenaiAuth ? "connected" : "disconnected";
+    return response.account ? "connected" : "disconnected";
   }
 
   async startDeviceCodeLogin(): Promise<DeviceCodeResponse> {

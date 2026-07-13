@@ -75,7 +75,7 @@ lines.on("line", (line) => {
         send({
           id: request.id,
           result: connected
-            ? { account: { type: "chatgpt", email: "test@example.com", planType: "plus" }, requiresOpenaiAuth: false }
+            ? { account: { type: "chatgpt", email: "test@example.com", planType: "plus" }, requiresOpenaiAuth: true }
             : { account: null, requiresOpenaiAuth: true }
         });
         break;
