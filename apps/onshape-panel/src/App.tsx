@@ -265,7 +265,7 @@ export function App() {
           value={prompt}
           onChange={(event) => updatePrompt(event.target.value)}
           onKeyDown={handlePromptKeyDown}
-          placeholder="Create a square sketch, rename a feature, or change a dimension…"
+          placeholder="Create, edit, combine, pattern, or remove Part Studio geometry…"
           rows={5}
           disabled={!ready || busy !== null}
         />
