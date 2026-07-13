@@ -20,6 +20,35 @@ interface PendingRequest {
   timer: NodeJS.Timeout;
 }
 
+const SAFE_CHILD_ENVIRONMENT = [
+  "PATH",
+  "LANG",
+  "LC_ALL",
+  "TZ",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "ALL_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "all_proxy"
+] as const;
+
+function childEnvironment(codexHome: string, temporaryDirectory: string): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {
+    HOME: codexHome,
+    CODEX_HOME: codexHome,
+    TMPDIR: temporaryDirectory
+  };
+  for (const name of SAFE_CHILD_ENVIRONMENT) {
+    if (process.env[name]) environment[name] = process.env[name];
+  }
+  return environment;
+}
+
 export interface DeviceCodeResponse {
   type: "chatgptDeviceCode";
   loginId: string;
@@ -52,9 +81,11 @@ export class CodexWorker {
     await mkdir(this.codexHome, { recursive: true, mode: 0o700 });
     const workdir = join(this.codexHome, "workspace");
     await mkdir(workdir, { recursive: true, mode: 0o700 });
+    const temporaryDirectory = join(this.codexHome, "tmp");
+    await mkdir(temporaryDirectory, { recursive: true, mode: 0o700 });
     this.process = spawn(this.codexCommand, ["app-server", "--stdio"], {
       cwd: workdir,
-      env: { ...process.env, CODEX_HOME: this.codexHome },
+      env: childEnvironment(this.codexHome, temporaryDirectory),
       stdio: ["pipe", "pipe", "pipe"]
     });
 
@@ -76,9 +107,14 @@ export class CodexWorker {
       this.started = undefined;
     });
 
+    await new Promise<void>((resolvePromise, reject) => {
+      this.process!.once("spawn", resolvePromise);
+      this.process!.once("error", reject);
+    });
+
     await this.request("initialize", {
       clientInfo: { name: "morassistant", title: "MorAssistant Onshape Copilot", version: "0.1.0" },
-      capabilities: { experimentalApi: true, requestAttestation: false }
+      capabilities: { requestAttestation: false }
     });
     this.notify("initialized");
   }
@@ -212,9 +248,10 @@ export class CodexWorker {
     }));
     const threadResponse = await this.request("thread/start", {
       ...(this.model ? { model: this.model } : {}),
+      cwd: join(this.codexHome, "workspace"),
       serviceName: "morassistant-onshape-cad-agent",
       approvalPolicy: "never",
-      sandbox: "read-only",
+      sandbox: "readOnly",
       ephemeral: true,
       baseInstructions: [
         "You are a conservative CAD planning component.",
@@ -227,6 +264,16 @@ export class CodexWorker {
 
     const turnResponse = await this.request("turn/start", {
       threadId: threadResponse.thread.id,
+      cwd: join(this.codexHome, "workspace"),
+      approvalPolicy: "never",
+      sandboxPolicy: {
+        type: "readOnly",
+        access: {
+          type: "restricted",
+          includePlatformDefaults: true,
+          readableRoots: [join(this.codexHome, "workspace")]
+        }
+      },
       input: [{
         type: "text",
         text: `User request:\n${prompt}\n\nCurrent Part Studio feature snapshot:\n${JSON.stringify(featureSnapshot)}`,
@@ -261,26 +308,56 @@ export class CodexWorker {
 }
 
 export class CodexWorkerPool {
-  private readonly workers = new Map<string, CodexWorker>();
+  private readonly workers = new Map<string, { worker: CodexWorker; idleTimer: NodeJS.Timeout }>();
 
   constructor(
     private readonly root: string,
     private readonly model?: string,
-    private readonly command = "codex"
+    private readonly command = "codex",
+    private readonly maxWorkers = 4,
+    private readonly idleTimeoutMs = 15 * 60_000
   ) {}
 
   forUser(userId: string): CodexWorker {
     const key = createHash("sha256").update(userId).digest("hex");
-    let worker = this.workers.get(key);
-    if (!worker) {
-      worker = new CodexWorker(resolve(this.root, key), this.model, this.command);
-      this.workers.set(key, worker);
+    let entry = this.workers.get(key);
+    if (!entry) {
+      if (this.workers.size >= this.maxWorkers) {
+        throw new Error("Codex worker capacity is temporarily full. Try again in a few minutes.");
+      }
+      const worker = new CodexWorker(resolve(this.root, key), this.model, this.command);
+      entry = { worker, idleTimer: this.idleTimer(key, worker) };
+      this.workers.set(key, entry);
+    } else {
+      clearTimeout(entry.idleTimer);
+      entry.idleTimer = this.idleTimer(key, entry.worker);
     }
-    return worker;
+    return entry.worker;
   }
 
   stopAll(): void {
-    for (const worker of this.workers.values()) worker.stop();
+    for (const { worker, idleTimer } of this.workers.values()) {
+      clearTimeout(idleTimer);
+      worker.stop();
+    }
     this.workers.clear();
+  }
+
+  stopForUser(userId: string): void {
+    const key = createHash("sha256").update(userId).digest("hex");
+    const entry = this.workers.get(key);
+    if (!entry) return;
+    clearTimeout(entry.idleTimer);
+    entry.worker.stop();
+    this.workers.delete(key);
+  }
+
+  private idleTimer(key: string, worker: CodexWorker): NodeJS.Timeout {
+    const timer = setTimeout(() => {
+      worker.stop();
+      this.workers.delete(key);
+    }, this.idleTimeoutMs);
+    timer.unref();
+    return timer;
   }
 }

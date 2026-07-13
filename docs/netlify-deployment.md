@@ -42,10 +42,11 @@ Deploy the repository's API service to a container host with an encrypted databa
 NODE_ENV=production
 APP_ORIGIN=https://morassistant-onshape.netlify.app
 ONSHAPE_REDIRECT_URI=https://api.your-domain.example/oauth/onshape/callback
-CODEX_USERS_ROOT=/persistent/codex-users
+SESSION_DB_PATH=/data/morassistant.sqlite
+CODEX_USERS_ROOT=/data/codex-users
 ```
 
-Add the remaining secrets from `.env.example` through the container host's secret manager. Never add them to Netlify's frontend build environment because `VITE_` values are public in the browser bundle.
+Mount a persistent private volume at `/data`. Add `SESSION_SECRET`, the separate `SESSION_ENCRYPTION_KEY`, and the remaining secrets from `.env.example` through the container host's secret manager. Never add them to Netlify's frontend build environment because `VITE_` values are public in the browser bundle.
 
 ## Onshape application URLs
 

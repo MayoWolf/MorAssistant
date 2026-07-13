@@ -1,5 +1,5 @@
-import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { existsSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import cookie from "@fastify/cookie";
@@ -26,6 +26,7 @@ import {
   type OnshapeTokens
 } from "@morassistant/onshape-client";
 import type { PartStudioContext } from "@morassistant/shared-types";
+import { SessionStore, type UserSession } from "./session-store.js";
 
 const repositoryRoot = fileURLToPath(new URL("../../../", import.meta.url));
 
@@ -35,6 +36,8 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   APP_ORIGIN: z.string().url().optional(),
   SESSION_SECRET: z.string().min(32).optional(),
+  SESSION_ENCRYPTION_KEY: z.string().min(32).optional(),
+  SESSION_DB_PATH: z.string().min(1).default(":memory:"),
   ONSHAPE_CLIENT_ID: z.string().min(1).optional(),
   ONSHAPE_CLIENT_SECRET: z.string().min(1).optional(),
   ONSHAPE_REDIRECT_URI: z.string().url().optional(),
@@ -44,12 +47,14 @@ const envSchema = z.object({
   ONSHAPE_API_VERSION: z.string().default("v15"),
   CODEX_MODEL: z.string().min(1).optional(),
   CODEX_COMMAND: z.string().default("codex"),
-  CODEX_USERS_ROOT: z.string().default(resolve(repositoryRoot, "data/codex-users"))
+  CODEX_USERS_ROOT: z.string().default(resolve(repositoryRoot, "data/codex-users")),
+  CODEX_MAX_WORKERS: z.coerce.number().int().min(1).max(100).default(4),
+  CODEX_IDLE_TIMEOUT_MS: z.coerce.number().int().min(11 * 60_000).max(3_600_000).default(15 * 60_000)
 });
 
 const env = envSchema.parse(process.env);
-if (env.NODE_ENV === "production" && (!env.SESSION_SECRET || !env.APP_ORIGIN)) {
-  throw new Error("SESSION_SECRET and APP_ORIGIN are required in production.");
+if (env.NODE_ENV === "production" && (!env.SESSION_SECRET || !env.SESSION_ENCRYPTION_KEY || !env.APP_ORIGIN || env.SESSION_DB_PATH === ":memory:")) {
+  throw new Error("SESSION_SECRET, SESSION_ENCRYPTION_KEY, SESSION_DB_PATH, and APP_ORIGIN are required in production.");
 }
 if (env.APP_ORIGIN && new URL(env.APP_ORIGIN).origin !== env.APP_ORIGIN.replace(/\/$/, "")) {
   throw new Error("APP_ORIGIN must contain only an origin, without a path, query, or fragment.");
@@ -57,47 +62,67 @@ if (env.APP_ORIGIN && new URL(env.APP_ORIGIN).origin !== env.APP_ORIGIN.replace(
 if (new URL(env.ONSHAPE_BASE_URL).origin !== env.ONSHAPE_BASE_URL.replace(/\/$/, "")) {
   throw new Error("ONSHAPE_BASE_URL must contain only an origin, without a path, query, or fragment.");
 }
+if ([env.ONSHAPE_CLIENT_ID, env.ONSHAPE_CLIENT_SECRET, env.ONSHAPE_REDIRECT_URI].some(Boolean) &&
+    ![env.ONSHAPE_CLIENT_ID, env.ONSHAPE_CLIENT_SECRET, env.ONSHAPE_REDIRECT_URI].every(Boolean)) {
+  throw new Error("ONSHAPE_CLIENT_ID, ONSHAPE_CLIENT_SECRET, and ONSHAPE_REDIRECT_URI must be configured together.");
+}
 if (env.NODE_ENV === "production") {
   for (const [name, value] of [
     ["APP_ORIGIN", env.APP_ORIGIN!],
     ["ONSHAPE_BASE_URL", env.ONSHAPE_BASE_URL],
     ["ONSHAPE_AUTHORIZATION_URL", env.ONSHAPE_AUTHORIZATION_URL],
     ["ONSHAPE_TOKEN_URL", env.ONSHAPE_TOKEN_URL],
-    ["ONSHAPE_REDIRECT_URI", env.ONSHAPE_REDIRECT_URI ?? ""]
+    ...(env.ONSHAPE_REDIRECT_URI ? [["ONSHAPE_REDIRECT_URI", env.ONSHAPE_REDIRECT_URI]] : [])
   ]) {
     if (!value || new URL(value).protocol !== "https:") throw new Error(`${name} must use HTTPS in production.`);
   }
 }
 
-interface UserSession {
-  id: string;
-  onshapeTokens?: OnshapeTokens;
-  onshapeRefresh?: Promise<OnshapeTokens>;
-  onshapeState?: string;
-  onshapeRedirectUri?: string;
-  codexLoginId?: string;
-  codexConnected?: boolean;
-  plans: Map<string, StoredCadPlan>;
-}
-
 const sessions = new Map<string, UserSession>();
-const workers = new CodexWorkerPool(resolve(repositoryRoot, env.CODEX_USERS_ROOT), env.CODEX_MODEL, env.CODEX_COMMAND);
+const sessionDatabasePath = env.SESSION_DB_PATH === ":memory:" ? env.SESSION_DB_PATH : resolve(repositoryRoot, env.SESSION_DB_PATH);
+const sessionStore = new SessionStore(sessionDatabasePath, env.SESSION_ENCRYPTION_KEY ?? randomBytes(32).toString("base64url"));
+const codexUsersRoot = resolve(repositoryRoot, env.CODEX_USERS_ROOT);
+for (const expiredSessionId of sessionStore.pruneExpired(Date.now() - 90 * 24 * 60 * 60 * 1_000)) {
+  const userDirectory = createHash("sha256").update(expiredSessionId).digest("hex");
+  rmSync(resolve(codexUsersRoot, userDirectory), { recursive: true, force: true });
+}
+const workers = new CodexWorkerPool(
+  codexUsersRoot,
+  env.CODEX_MODEL,
+  env.CODEX_COMMAND,
+  env.CODEX_MAX_WORKERS,
+  env.CODEX_IDLE_TIMEOUT_MS
+);
+
+function saveSession(session: UserSession): void {
+  sessionStore.save(session);
+}
 
 function getSession(request: FastifyRequest, reply: FastifyReply): UserSession {
   const signedCookie = request.cookies.mor_session;
   const unsignedCookie = signedCookie ? request.unsignCookie(signedCookie) : undefined;
   let id = unsignedCookie?.valid ? unsignedCookie.value : undefined;
-  let session = id ? sessions.get(id) : undefined;
+  let session = id ? sessions.get(id) ?? sessionStore.get(id) : undefined;
+  let refreshCookie = false;
   if (!session) {
     id = randomUUID();
-    session = { id, plans: new Map() };
+    session = sessionStore.create(id);
     sessions.set(id, session);
-    reply.setCookie("mor_session", id, {
+    refreshCookie = true;
+  } else {
+    if (!sessions.has(session.id)) sessions.set(session.id, session);
+    if (Date.now() - session.lastTouchedAt >= 60 * 60 * 1_000) {
+      saveSession(session);
+      refreshCookie = true;
+    }
+  }
+  if (refreshCookie) {
+    reply.setCookie("mor_session", session.id, {
       path: "/",
       httpOnly: true,
       secure: env.NODE_ENV === "production",
       sameSite: env.NODE_ENV === "production" ? "none" : "lax",
-      maxAge: 60 * 60 * 24 * 7,
+      maxAge: 60 * 60 * 24 * 30,
       signed: true
     });
   }
@@ -123,10 +148,12 @@ async function refreshSessionTokens(session: UserSession): Promise<OnshapeTokens
     session.onshapeRefresh = refreshOnshapeTokens(onshapeOAuthConfig(), session.onshapeTokens.refreshToken)
       .then((tokens) => {
         session.onshapeTokens = tokens;
+        saveSession(session);
         return tokens;
       })
       .catch((error) => {
         delete session.onshapeTokens;
+        saveSession(session);
         throw error;
       })
       .finally(() => delete session.onshapeRefresh);
@@ -255,7 +282,10 @@ app.addHook("preHandler", async (request, reply) => {
   }
 });
 
-app.get("/health", async () => ({ ok: true }));
+app.get("/health", async (_request, reply) => {
+  if (!sessionStore.isHealthy()) return reply.code(503).send({ ok: false });
+  return { ok: true };
+});
 
 app.get("/api/status", async (request, reply) => {
   const session = getSession(request, reply);
@@ -268,7 +298,10 @@ app.get("/api/status", async (request, reply) => {
   if (session.codexConnected) {
     try {
       if (await workers.forUser(session.id).accountStatus() === "connected") codex = "connected";
-      else delete session.codexConnected;
+      else {
+        delete session.codexConnected;
+        saveSession(session);
+      }
     } catch (error) {
       request.log.warn(logError(error), "Unable to read Codex account status");
     }
@@ -278,6 +311,7 @@ app.get("/api/status", async (request, reply) => {
 
 app.get("/oauth/onshape/start", async (request, reply) => {
   const session = getSession(request, reply);
+  const oauthConfig = onshapeOAuthConfig();
   const query = z.object({
     redirectOnshapeUri: z.string().url().max(2_048).optional(),
     companyId: z.string().min(1).max(200).optional()
@@ -291,8 +325,9 @@ app.get("/oauth/onshape/start", async (request, reply) => {
     session.onshapeRedirectUri = redirect.toString();
   }
   session.onshapeState = randomBytes(24).toString("base64url");
+  saveSession(session);
   return reply.redirect(buildOnshapeAuthorizationUrl(
-    onshapeOAuthConfig(),
+    oauthConfig,
     session.onshapeState,
     query.companyId && query.companyId !== "cad" ? query.companyId : undefined
   ));
@@ -309,15 +344,19 @@ app.get("/oauth/onshape/callback", async (request, reply) => {
     throw new HttpError(400, "Invalid or expired Onshape OAuth state.");
   }
   delete session.onshapeState;
+  saveSession(session);
   if (query.error) {
     delete session.onshapeRedirectUri;
+    saveSession(session);
     return reply.code(400).type("text/html").send(`<!doctype html><meta charset="utf-8"><title>Onshape access denied</title><main><h1>Onshape access was not granted</h1><p>No access was stored. Return to Onshape and grant MorAssistant when you are ready.</p></main>`);
   }
   if (!query.code) throw new HttpError(400, "Onshape did not return an authorization code.");
   session.onshapeTokens = await exchangeOnshapeCode(onshapeOAuthConfig(), query.code);
+  saveSession(session);
   if (session.onshapeRedirectUri) {
     const redirectUri = session.onshapeRedirectUri;
     delete session.onshapeRedirectUri;
+    saveSession(session);
     return reply.redirect(redirectUri);
   }
   return reply.type("text/html").send(`<!doctype html><meta charset="utf-8"><title>Onshape connected</title><main><h1>Onshape access granted</h1><p>Return to Onshape and reopen the MorAssistant panel.</p></main>`);
@@ -326,13 +365,21 @@ app.get("/oauth/onshape/callback", async (request, reply) => {
 app.post("/api/codex/connect", async (request, reply) => {
   const session = getSession(request, reply);
   if (session.codexLoginId) return reply.code(409).send({ error: "A Codex sign-in is already pending." });
+  if (session.codexConnected) return reply.code(409).send({ error: "Codex is already connected." });
   const worker = workers.forUser(session.id);
-  const login = await worker.startDeviceCodeLogin();
+  let login;
+  try {
+    login = await worker.startDeviceCodeLogin();
+  } catch (error) {
+    workers.stopForUser(session.id);
+    throw error;
+  }
   session.codexLoginId = login.loginId;
   void worker.waitForLogin(login.loginId).then((success) => {
     delete session.codexLoginId;
     if (success) {
       session.codexConnected = true;
+      saveSession(session);
     }
   }).catch((error) => {
     delete session.codexLoginId;
@@ -375,7 +422,13 @@ app.post("/api/plans", async (request, reply) => {
     status: "pending",
     createdAt: new Date().toISOString()
   };
+  while (session.plans.size >= 100) {
+    const oldestPlanId = session.plans.keys().next().value as string | undefined;
+    if (!oldestPlanId) break;
+    session.plans.delete(oldestPlanId);
+  }
   session.plans.set(stored.id, stored);
+  saveSession(session);
   reply.code(201);
   return stored;
 });
@@ -389,11 +442,13 @@ app.post("/api/plans/:id/apply", async (request, reply) => {
 
   const client = clientFor(session, plan.context);
   plan.status = "applying";
+  saveSession(session);
   try {
     const currentTree = await client.listFeatures(plan.context);
     validatePlanAgainstFeatureTree(plan, currentTree.features);
   } catch (error) {
     plan.status = "pending";
+    saveSession(session);
     throw error;
   }
   const operations: OperationExecutionResult[] = [];
@@ -422,6 +477,7 @@ app.post("/api/plans/:id/apply", async (request, reply) => {
   const failed = operations.some((operation) => operation.status === "failed") || regenerationErrors.length > 0;
   plan.status = failed ? "failed" : "applied";
   plan.result = { status: plan.status, operations, regenerationErrors };
+  saveSession(session);
   return plan;
 });
 
@@ -434,7 +490,7 @@ app.setErrorHandler((error, request, reply) => {
         ? ([401, 403, 404, 409, 429].includes(error.status) ? error.status : 502)
         : /changed since preview|changed after the plan|no longer exists/i.test(error instanceof Error ? error.message : "")
           ? 409
-          : /not configured|not available for this installed extension/i.test(error instanceof Error ? error.message : "")
+          : /not configured|not available for this installed extension|worker capacity is temporarily full/i.test(error instanceof Error ? error.message : "")
             ? 503
             : 500;
   if (status >= 500) request.log.error(logError(error), "Request failed");
@@ -453,6 +509,7 @@ if (existsSync(panelDist)) {
 const shutdown = async () => {
   workers.stopAll();
   await app.close();
+  sessionStore.close();
 };
 process.once("SIGINT", () => void shutdown());
 process.once("SIGTERM", () => void shutdown());

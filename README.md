@@ -27,9 +27,9 @@ Installed Onshape application
         ▼
 Hosted extension backend (Fastify)
 ├── Onshape OAuth and refresh
-├── in-memory user sessions and approval plans
+├── AES-GCM encrypted SQLite sessions and approval plans
 ├── deterministic plan validator / executor
-└── one Codex app-server process + CODEX_HOME per user session
+└── one Codex app-server process + persistent CODEX_HOME per user session
         │
         └── structured CAD plan (no direct REST access)
 
@@ -100,13 +100,15 @@ Onshape requires public extension pages and OAuth callbacks to use HTTPS. Set `A
 
 The panel can instead be hosted on Netlify while the API runs on a separate persistent container. Set `VITE_API_ORIGIN` during the Netlify build and set the API's `APP_ORIGIN` to the exact Netlify panel origin. See [Netlify frontend deployment](docs/netlify-deployment.md).
 
+The production container and persistent-volume procedure are documented in [Persistent backend deployment](docs/backend-deployment.md).
+
 ## Codex authentication and model selection
 
-`Continue with ChatGPT` starts Codex app-server's `chatgptDeviceCode` login. The server creates a separate directory under `CODEX_USERS_ROOT` for each application session and starts one app-server process with that directory as `CODEX_HOME`.
+`Continue with ChatGPT` starts Codex app-server's `chatgptDeviceCode` login. The server creates a separate directory under `CODEX_USERS_ROOT` for each application session and starts one app-server process with that directory as `CODEX_HOME`. In production, both that root and `SESSION_DB_PATH` live on the same persistent private volume. Session payloads—including Onshape OAuth tokens and CAD plans—are encrypted with AES-256-GCM before SQLite writes them.
 
 `CODEX_MODEL` is optional. When omitted, app-server uses the signed-in user's configured/default model. This avoids assuming that an undocumented or account-ineligible model slug exists. If you set it, use a model ID returned by app-server's model catalog for the target account.
 
-The current MVP uses in-memory web sessions. Restarting the API creates new session identities, while old isolated Codex credential directories remain on disk. Before production, replace the in-memory store with an encrypted database-backed session mapping and add a credential-directory retention/deletion policy.
+Web sessions and Codex credentials survive container restarts. Sessions unused for 90 days and their isolated credential directories are removed during startup. A plan that was in the `applying` state during a restart is permanently failed closed so it cannot be replayed accidentally.
 
 ## Internal MCP adapter development
 
@@ -142,10 +144,10 @@ First visit `/oauth/onshape/start` on the printed app origin, then use the panel
 
 ## Security and production gaps
 
-- Persist sessions, OAuth refresh tokens, audit events, and plans in an encrypted store.
+- Add a separate append-only, encrypted audit-event store; sessions, OAuth refresh tokens, and plans are already durable and encrypted.
 - Bind the session to the authenticated Onshape user instead of relying on an opaque browser session ID.
 - Confirm OAuth grants and feature payloads on every Enterprise stack offered at launch. Runtime stack selection is restricted to the configured origin and HTTPS `*.onshape.com` origins.
-- Add per-user worker quotas, idle termination, and credential-directory cleanup. HTTP requests are already rate limited per session.
+- Add capacity-aware horizontal scaling; the current single-volume service caps active Codex workers, terminates idle workers, and cleans up expired credential directories.
 - Store before/after feature payload hashes in an append-only audit log.
 - Capture real v15 fixture payloads from a dedicated Onshape test document before enabling feature creation.
 - Run the documented live integration matrix against a disposable Onshape document; automated tests intentionally do not mutate external services.

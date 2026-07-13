@@ -1,0 +1,15 @@
+.git
+.github
+.netlify
+node_modules
+**/node_modules
+dist
+**/dist
+data/*
+.env
+.env.*
+!.env.example
+coverage
+*.log
+*.tsbuildinfo
+.DS_Store

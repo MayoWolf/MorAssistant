@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline";
 
+if (process.env.ONSHAPE_CLIENT_SECRET || process.env.SESSION_SECRET || process.env.SESSION_ENCRYPTION_KEY) {
+  throw new Error("The Codex worker inherited a backend secret.");
+}
+
 let connected = false;
 let threadCounter = 0;
 let turnCounter = 0;
