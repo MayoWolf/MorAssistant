@@ -96,6 +96,12 @@ lines.on("line", (line) => {
         break;
       }
       case "turn/start": {
+        if (request.params?.sandboxPolicy?.type !== "readOnly" || request.params.sandboxPolicy.networkAccess !== false) {
+          throw new Error("turn/start must use the no-network readOnly Codex sandbox policy");
+        }
+        if ("access" in request.params.sandboxPolicy) {
+          throw new Error("turn/start must not send the removed readOnly.access field");
+        }
         const id = `turn-${++turnCounter}`;
         const plan = planFromInput(request.params);
         send({ id: request.id, result: { turn: { id, status: "inProgress", items: [], error: null } } });

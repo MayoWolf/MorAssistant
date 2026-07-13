@@ -267,11 +267,7 @@ export class CodexWorker {
       approvalPolicy: "never",
       sandboxPolicy: {
         type: "readOnly",
-        access: {
-          type: "restricted",
-          includePlatformDefaults: true,
-          readableRoots: [join(this.codexHome, "workspace")]
-        }
+        networkAccess: false
       },
       input: [{
         type: "text",
