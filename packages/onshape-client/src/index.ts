@@ -52,6 +52,38 @@ export interface FeatureListResponse {
   [key: string]: unknown;
 }
 
+export interface FeatureDependencyNode {
+  featureId: string;
+  name: string;
+  featureType: string;
+  status: string;
+  index: number;
+  dependsOn: string[];
+  usedBy: string[];
+}
+
+export interface PartStudioGeometrySummary {
+  bodyCount?: number;
+  solidBodyCount?: number;
+  faceCount?: number;
+  edgeCount?: number;
+  vertexCount?: number;
+  partCount?: number;
+  volumeM3?: number;
+  massKg?: number;
+  centroidM?: [number, number, number];
+}
+
+export interface PartStudioInspection {
+  featureTree: FeatureListResponse;
+  dependencies: FeatureDependencyNode[];
+  geometry: PartStudioGeometrySummary;
+  bodyDetails?: unknown;
+  massProperties?: unknown;
+  topologyEvaluation?: unknown;
+  warnings: string[];
+}
+
 export interface FeatureUpdateConcurrency {
   serializationVersion?: string;
   sourceMicroversion?: string;
@@ -59,6 +91,137 @@ export interface FeatureUpdateConcurrency {
 
 export function featureFingerprint(feature: Record<string, unknown>): string {
   return createHash("sha256").update(JSON.stringify(feature)).digest("hex");
+}
+
+function referencedFeatureIds(feature: OnshapeFeature, knownIds: Set<string>): string[] {
+  const references = new Set<string>();
+  const visit = (value: unknown): void => {
+    if (typeof value === "string") {
+      if (knownIds.has(value)) references.add(value);
+      for (const token of value.match(/[A-Za-z0-9_~-]{3,}/gu) ?? []) {
+        if (knownIds.has(token)) references.add(token);
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (value && typeof value === "object") {
+      for (const item of Object.values(value)) visit(item);
+    }
+  };
+  visit(feature);
+  references.delete(feature.featureId);
+  return [...references];
+}
+
+export function buildFeatureDependencyGraph(tree: FeatureListResponse): FeatureDependencyNode[] {
+  const knownIds = new Set(tree.features.map((feature) => feature.featureId));
+  const states = normalizeFeatureStates(tree.featureStates);
+  const nodes = tree.features.map((feature, index) => ({
+    featureId: feature.featureId,
+    name: feature.name ?? feature.featureId,
+    featureType: feature.featureType ?? "unknown",
+    status: String(states.get(feature.featureId)?.featureStatus ?? feature.featureStatus ?? "OK"),
+    index,
+    dependsOn: referencedFeatureIds(feature, knownIds),
+    usedBy: [] as string[]
+  }));
+  const byId = new Map(nodes.map((node) => [node.featureId, node]));
+  for (const node of nodes) {
+    for (const dependency of node.dependsOn) byId.get(dependency)?.usedBy.push(node.featureId);
+  }
+  return nodes;
+}
+
+function topologyCounts(value: unknown): PartStudioGeometrySummary {
+  const summary: PartStudioGeometrySummary = {};
+  type CountKey = "bodyCount" | "faceCount" | "edgeCount" | "vertexCount";
+  const countKeys = new Map<string, CountKey>([
+    ["bodies", "bodyCount"],
+    ["faces", "faceCount"],
+    ["edges", "edgeCount"],
+    ["vertices", "vertexCount"]
+  ]);
+  const visit = (item: unknown): void => {
+    if (Array.isArray(item)) {
+      for (const child of item) visit(child);
+      return;
+    }
+    if (!item || typeof item !== "object") return;
+    for (const [key, child] of Object.entries(item)) {
+      const target = countKeys.get(key.toLocaleLowerCase());
+      if (target && Array.isArray(child)) summary[target] = (summary[target] ?? 0) + child.length;
+      visit(child);
+    }
+  };
+  visit(value);
+  return summary;
+}
+
+function firstFinite(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (Array.isArray(value)) return firstFinite(value[0]);
+  return undefined;
+}
+
+function featureScriptPrimitive(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(featureScriptPrimitive);
+  if (!value || typeof value !== "object") return value;
+  const record = value as Record<string, unknown>;
+  if (Array.isArray(record.value)) {
+    const entries = record.value as unknown[];
+    if (entries.every((entry) => entry && typeof entry === "object" && "key" in entry && "value" in entry)) {
+      return Object.fromEntries(entries.map((entry) => {
+        const pair = entry as Record<string, unknown>;
+        return [String(featureScriptPrimitive(pair.key)), featureScriptPrimitive(pair.value)];
+      }));
+    }
+    return entries.map(featureScriptPrimitive);
+  }
+  if ("value" in record && Object.keys(record).every((key) => ["btType", "typeTag", "value"].includes(key))) {
+    return featureScriptPrimitive(record.value);
+  }
+  return Object.fromEntries(Object.entries(record).map(([key, child]) => [key, featureScriptPrimitive(child)]));
+}
+
+function geometrySummary(bodyDetails: unknown, massProperties: unknown, topologyEvaluation: unknown): PartStudioGeometrySummary {
+  const summary = topologyCounts(bodyDetails);
+  const mass = massProperties && typeof massProperties === "object"
+    ? (massProperties as Record<string, unknown>).bodies
+    : undefined;
+  if (mass && typeof mass === "object" && !Array.isArray(mass)) {
+    const bodies = mass as Record<string, unknown>;
+    summary.partCount = Object.keys(bodies).filter((key) => key !== "-all-").length;
+    const aggregate = bodies["-all-"];
+    if (aggregate && typeof aggregate === "object") {
+      const record = aggregate as Record<string, unknown>;
+      const volumeM3 = firstFinite(record.volume);
+      const massKg = firstFinite(record.mass);
+      if (volumeM3 !== undefined) summary.volumeM3 = volumeM3;
+      if (massKg !== undefined) summary.massKg = massKg;
+      if (Array.isArray(record.centroid) && record.centroid.length >= 3) {
+        const centroid = record.centroid.slice(0, 3);
+        if (centroid.every((coordinate) => typeof coordinate === "number" && Number.isFinite(coordinate))) {
+          summary.centroidM = centroid as [number, number, number];
+        }
+      }
+    }
+  }
+  const decoded = featureScriptPrimitive(
+    topologyEvaluation && typeof topologyEvaluation === "object"
+      ? (topologyEvaluation as Record<string, unknown>).result
+      : topologyEvaluation
+  );
+  if (decoded && typeof decoded === "object" && !Array.isArray(decoded)) {
+    const record = decoded as Record<string, unknown>;
+    for (const key of ["solidBodyCount", "faceCount", "edgeCount", "vertexCount"] as const) {
+      const value = firstFinite(record[key]);
+      if (value !== undefined) summary[key] = value;
+    }
+  }
+  return summary;
 }
 
 function resolveFeatureReferences(value: unknown, features: OnshapeFeature[]): unknown {
@@ -207,6 +370,72 @@ export class OnshapeClient {
     );
   }
 
+  async getBodyDetails(context: PartStudioContext): Promise<unknown> {
+    const query = new URLSearchParams();
+    if (context.configuration) query.set("configuration", context.configuration);
+    const suffix = query.size > 0 ? `?${query}` : "";
+    return this.request(
+      `/partstudios/d/${encodeURIComponent(context.documentId)}/w/${encodeURIComponent(context.workspaceId)}/e/${encodeURIComponent(context.elementId)}/bodydetails${suffix}`
+    );
+  }
+
+  async getMassProperties(context: PartStudioContext): Promise<unknown> {
+    const query = new URLSearchParams();
+    if (context.configuration) query.set("configuration", context.configuration);
+    const suffix = query.size > 0 ? `?${query}` : "";
+    return this.request(
+      `/partstudios/d/${encodeURIComponent(context.documentId)}/w/${encodeURIComponent(context.workspaceId)}/e/${encodeURIComponent(context.elementId)}/massproperties${suffix}`
+    );
+  }
+
+  async evaluateFeatureScript(context: PartStudioContext, script: string, libraryVersion?: number): Promise<unknown> {
+    const query = new URLSearchParams({ rollbackBarIndex: "-1" });
+    if (context.configuration) query.set("configuration", context.configuration);
+    return this.request(
+      `/partstudios/d/${encodeURIComponent(context.documentId)}/w/${encodeURIComponent(context.workspaceId)}/e/${encodeURIComponent(context.elementId)}/featurescript?${query}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ script, ...(libraryVersion ? { libraryVersion } : {}) })
+      }
+    );
+  }
+
+  async inspectPartStudio(context: PartStudioContext): Promise<PartStudioInspection> {
+    const featureTree = await this.listFeatures(context);
+    const topologyScript = [
+      "function(context is Context, definition is map)",
+      "{",
+      "    return {",
+      '        "solidBodyCount" : size(evaluateQuery(context, qBodyType(qEverything(EntityType.BODY), BodyType.SOLID))),',
+      '        "faceCount" : size(evaluateQuery(context, qEverything(EntityType.FACE))),',
+      '        "edgeCount" : size(evaluateQuery(context, qEverything(EntityType.EDGE))),',
+      '        "vertexCount" : size(evaluateQuery(context, qEverything(EntityType.VERTEX)))',
+      "    };",
+      "}"
+    ].join("\n");
+    const [bodyResult, massResult, topologyResult] = await Promise.allSettled([
+      this.getBodyDetails(context),
+      this.getMassProperties(context),
+      this.evaluateFeatureScript(context, topologyScript, typeof featureTree.libraryVersion === "number" ? featureTree.libraryVersion : undefined)
+    ]);
+    const warnings: string[] = [];
+    if (bodyResult.status === "rejected") warnings.push("Onshape body details were unavailable; feature-level planning remains available.");
+    if (massResult.status === "rejected") warnings.push("Onshape mass properties were unavailable; dimensional and feature planning remains available.");
+    if (topologyResult.status === "rejected") warnings.push("The read-only FeatureScript topology probe was unavailable.");
+    const bodyDetails = bodyResult.status === "fulfilled" ? bodyResult.value : undefined;
+    const massProperties = massResult.status === "fulfilled" ? massResult.value : undefined;
+    const topologyEvaluation = topologyResult.status === "fulfilled" ? topologyResult.value : undefined;
+    return {
+      featureTree,
+      dependencies: buildFeatureDependencyGraph(featureTree),
+      geometry: geometrySummary(bodyDetails, massProperties, topologyEvaluation),
+      ...(bodyDetails !== undefined ? { bodyDetails } : {}),
+      ...(massProperties !== undefined ? { massProperties } : {}),
+      ...(topologyEvaluation !== undefined ? { topologyEvaluation } : {}),
+      warnings
+    };
+  }
+
   async updateFeature(
     context: PartStudioContext,
     feature: OnshapeFeature,
@@ -347,7 +576,7 @@ export class OnshapeClient {
   }
 }
 
-function normalizeFeatureStates(value: unknown): Map<string, Record<string, unknown>> {
+export function normalizeFeatureStates(value: unknown): Map<string, Record<string, unknown>> {
   const result = new Map<string, Record<string, unknown>>();
   if (Array.isArray(value)) {
     for (const state of value) {

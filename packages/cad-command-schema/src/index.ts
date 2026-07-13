@@ -224,6 +224,24 @@ export interface StoredCadPlan extends CadPlan {
   prompt: string;
   status: "pending" | "applying" | "applied" | "failed";
   createdAt: string;
+  agentTrace?: {
+    planningAttempts: number;
+    featureCount: number;
+    dependencyCount: number;
+    geometry: {
+      bodyCount?: number;
+      solidBodyCount?: number;
+      faceCount?: number;
+      edgeCount?: number;
+      vertexCount?: number;
+      partCount?: number;
+      volumeM3?: number;
+      massKg?: number;
+      centroidM?: [number, number, number];
+    };
+    inspectionWarnings: string[];
+  };
+  recoveryForPlanId?: string;
   result?: PlanExecutionResult;
 }
 
@@ -232,12 +250,14 @@ export interface OperationExecutionResult {
   operation: CadOperation;
   status: "applied" | "failed";
   message: string;
+  verification: "passed" | "failed" | "not_run";
 }
 
 export interface PlanExecutionResult {
   status: "applied" | "failed";
   operations: OperationExecutionResult[];
   regenerationErrors: RegenerationError[];
+  preexistingRegenerationErrors?: RegenerationError[];
 }
 
 export interface RegenerationError {

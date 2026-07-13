@@ -37,6 +37,35 @@ server.registerTool("list_features", {
   return { content: [{ type: "text", text: JSON.stringify({ features }) }], structuredContent: { features } };
 });
 
+server.registerTool("inspect_part_studio", {
+  title: "Inspect the Part Studio model",
+  description: "Read the feature dependency graph, downstream impact, topology, and mass-property summary. This does not modify the document.",
+  inputSchema: contextShape,
+  annotations: { readOnlyHint: true, destructiveHint: false }
+}, async (context) => {
+  const inspection = await client.inspectPartStudio(context);
+  const model = {
+    dependencies: inspection.dependencies,
+    geometry: inspection.geometry,
+    warnings: inspection.warnings
+  };
+  return { content: [{ type: "text", text: JSON.stringify(model) }], structuredContent: model };
+});
+
+server.registerTool("evaluate_featurescript", {
+  title: "Evaluate read-only FeatureScript",
+  description: "Evaluate one FeatureScript lambda against the current Part Studio for geometric analysis. Evaluation is transient and does not persist feature changes.",
+  inputSchema: {
+    ...contextShape,
+    script: z.string().min(1).max(20_000),
+    libraryVersion: z.number().int().positive().optional()
+  },
+  annotations: { readOnlyHint: true, destructiveHint: false }
+}, async ({ script, libraryVersion, ...context }) => {
+  const result = await client.evaluateFeatureScript(context, script, libraryVersion);
+  return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: { result } };
+});
+
 server.registerTool("rename_feature", {
   title: "Rename a Part Studio feature",
   description: "Rename one existing feature, only if its current name still matches the preview.",

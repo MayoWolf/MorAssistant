@@ -96,6 +96,7 @@ textarea:disabled { cursor: not-allowed; }
 .notice strong { font-size: 11px; }
 .notice p { margin: 3px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .notice.error { border-left-color: var(--red); }
+.notice.recovery { border-left-color: var(--green); background: #f1f8f4; }
 
 .plan { overflow: hidden; }
 .plan-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 16px 13px; }
@@ -104,6 +105,13 @@ textarea:disabled { cursor: not-allowed; }
 .risk.low { color: #126044; background: #ddf2e8; }
 .risk.medium { color: #815b11; background: #f6ebce; }
 .risk.high { color: #92362d; background: #f7dfdc; }
+.agent-trace {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px;
+  border-top: 1px solid #e5e8e4; background: #e5e8e4;
+}
+.agent-trace span { min-width: 0; padding: 9px 6px; display: flex; flex-direction: column; align-items: center; background: #f6f8f4; text-align: center; }
+.agent-trace strong { color: var(--green-dark); font: 600 11px ui-monospace, SFMono-Regular, monospace; }
+.agent-trace small { margin-top: 2px; color: var(--muted); font-size: 7px; line-height: 1.25; }
 .operations { margin: 0; padding: 0; list-style: none; border-top: 1px solid #e5e8e4; }
 .operations li { position: relative; display: grid; grid-template-columns: 29px 1fr auto; gap: 9px; padding: 13px 16px; border-bottom: 1px solid #e5e8e4; }
 .op-index { padding-top: 1px; color: #87908c; font: 500 9px ui-monospace, SFMono-Regular, monospace; }
@@ -118,6 +126,8 @@ textarea:disabled { cursor: not-allowed; }
 .warnings { padding: 9px 16px; color: #795b20; background: #fbf5e7; border-bottom: 1px solid #e9dec4; }
 .warnings p { margin: 2px 0; font-size: 9px; line-height: 1.5; }
 .warnings.error-list { color: #863a32; background: #fbebe9; border-color: #efd0cc; }
+.existing-errors { padding: 8px 16px; color: #68716d; background: #f1f3f0; border-bottom: 1px solid #dfe3df; }
+.existing-errors p { margin: 0; font-size: 8px; line-height: 1.5; }
 .approval-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; background: #f7f8f5; }
 .approval-bar > div { display: flex; flex-direction: column; }
 .approval-bar strong { font-size: 10px; }

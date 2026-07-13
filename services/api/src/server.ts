@@ -13,6 +13,7 @@ import {
   cadPlanSchema,
   validatePlanAgainstFeatureTree,
   type OperationExecutionResult,
+  type RegenerationError,
   type StoredCadPlan
 } from "@morassistant/cad-command-schema";
 import { CodexWorkerPool } from "@morassistant/codex-worker";
@@ -126,11 +127,14 @@ function parsePlanRequest(value: unknown): { prompt: string; context: PartStudio
 
 async function createStoredPlan(
   session: UserSession,
-  body: { prompt: string; context: PartStudioContext }
+  body: { prompt: string; context: PartStudioContext },
+  recoveryForPlanId?: string
 ): Promise<StoredCadPlan> {
   const client = clientFor(session, body.context);
-  const featureTree = await client.listFeatures(body.context);
-  const plan = cadPlanSchema.parse(await workers.forUser(session.id).createPlan(body.prompt, featureTree));
+  const inspection = await client.inspectPartStudio(body.context);
+  const planning = await workers.forUser(session.id).createPlan(body.prompt, inspection);
+  const plan = cadPlanSchema.parse(planning.plan);
+  const featureTree = inspection.featureTree;
   validatePlanAgainstFeatureTree(plan, featuresWithHashes(featureTree.features));
   if (body.context.configuration && plan.operations.some((operation) => operation.type === "update_dimension")) {
     throw new HttpError(409, "Dimension edits in configured Part Studios are not supported yet. Rename operations remain available.");
@@ -141,7 +145,15 @@ async function createStoredPlan(
     context: body.context,
     prompt: body.prompt,
     status: "pending",
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    agentTrace: {
+      planningAttempts: planning.attempts,
+      featureCount: planning.inspection.featureCount,
+      dependencyCount: planning.inspection.dependencyCount,
+      geometry: planning.inspection.geometry,
+      inspectionWarnings: planning.inspection.warnings
+    },
+    ...(recoveryForPlanId ? { recoveryForPlanId } : {})
   };
   while (session.plans.size >= 100) {
     const oldestPlanId = session.plans.keys().next().value as string | undefined;
@@ -168,6 +180,25 @@ function planJobError(error: unknown): string {
   }
   if (error instanceof Error) return error.message;
   return "Could not create a CAD plan.";
+}
+
+function recoveryPrompt(plan: StoredCadPlan): string {
+  const operationResults = plan.result?.operations.map((item) =>
+    `${item.index + 1}. ${item.operation.type}: ${item.status} — ${item.message}`
+  ).join("\n") ?? "No operation result was recorded.";
+  const regeneration = plan.result?.regenerationErrors.map((item) =>
+    `${item.featureName} (${item.status}): ${item.message ?? "no additional message"}`
+  ).join("\n") || "No separate regeneration error was reported.";
+  return [
+    "Create a recovery plan for a partially executed Onshape request.",
+    `Original user request: ${plan.prompt}`,
+    `Original plan summary: ${plan.summary}`,
+    "Execution results:",
+    operationResults,
+    "New regeneration errors:",
+    regeneration,
+    "Inspect the current Part Studio snapshot, account for operations that already applied, and propose the smallest safe alternate plan that still completes the original request. Do not repeat successful work. The recovery plan will receive its own explicit user approval."
+  ].join("\n\n").slice(0, 4_000);
 }
 
 function getCookieSession(request: FastifyRequest, reply: FastifyReply): UserSession {
@@ -595,6 +626,43 @@ app.get("/api/plan-jobs/:id", async (request, reply) => {
   return { id: job.id, status: job.status };
 });
 
+app.post("/api/plans/:id/recovery-jobs", async (request, reply) => {
+  const session = getSession(request, reply);
+  const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+  const failedPlan = session.plans.get(id);
+  if (!failedPlan) return reply.code(404).send({ error: "Plan not found." });
+  if (failedPlan.status !== "failed" || !failedPlan.result) {
+    return reply.code(409).send({ error: "A recovery plan is available only after a failed execution." });
+  }
+  const existing = [...session.plans.values()].find((candidate) => candidate.recoveryForPlanId === failedPlan.id);
+  if (existing) return { id: randomUUID(), status: "completed", plan: existing };
+  prunePlanJobs();
+  if ([...planJobs.values()].some((job) => job.sessionId === session.id && job.status === "planning")) {
+    return reply.code(409).send({ error: "A CAD plan is already being created for this session." });
+  }
+  const job: PlanJob = {
+    id: randomUUID(),
+    sessionId: session.id,
+    status: "planning",
+    createdAt: Date.now()
+  };
+  planJobs.set(job.id, job);
+  void createStoredPlan(
+    session,
+    { prompt: recoveryPrompt(failedPlan), context: failedPlan.context },
+    failedPlan.id
+  ).then((plan) => {
+    job.status = "completed";
+    job.plan = plan;
+  }).catch((error) => {
+    job.status = "failed";
+    job.error = planJobError(error);
+    request.log.error(logError(error), "Background recovery planning failed");
+  });
+  reply.code(202);
+  return { id: job.id, status: job.status };
+});
+
 app.post("/api/plans/:id/apply", async (request, reply) => {
   const session = getSession(request, reply);
   const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
@@ -605,40 +673,65 @@ app.post("/api/plans/:id/apply", async (request, reply) => {
   const client = clientFor(session, plan.context);
   plan.status = "applying";
   saveSession(session);
+  let preexistingRegenerationErrors: RegenerationError[];
   try {
     const currentTree = await client.listFeatures(plan.context);
     validatePlanAgainstFeatureTree(plan, featuresWithHashes(currentTree.features));
+    preexistingRegenerationErrors = await client.inspectRegenerationErrors(plan.context);
   } catch (error) {
     plan.status = "pending";
     saveSession(session);
     throw error;
   }
   const operations: OperationExecutionResult[] = [];
+  const preexistingKeys = new Set(preexistingRegenerationErrors.map((item) =>
+    `${item.featureId}\u0000${item.status}\u0000${item.message ?? ""}`
+  ));
+  let regenerationErrors = [] as typeof preexistingRegenerationErrors;
 
   for (const [index, operation] of plan.operations.entries()) {
     try {
       const message = await client.applyOperation(plan.context, operation);
-      operations.push({ index, operation, status: "applied", message });
+      const currentErrors = await client.inspectRegenerationErrors(plan.context).catch((error) => [{
+        featureId: "unknown",
+        featureName: "Regeneration check",
+        status: "CHECK_FAILED",
+        message: error instanceof Error ? error.message : "Unable to check regeneration status."
+      }]);
+      regenerationErrors = currentErrors.filter((item) => !preexistingKeys.has(
+        `${item.featureId}\u0000${item.status}\u0000${item.message ?? ""}`
+      ));
+      if (regenerationErrors.length > 0) {
+        operations.push({
+          index,
+          operation,
+          status: "failed",
+          verification: "failed",
+          message: `${message} Onshape regeneration then reported ${regenerationErrors.length} new error${regenerationErrors.length === 1 ? "" : "s"}; execution stopped.`
+        });
+        break;
+      }
+      operations.push({ index, operation, status: "applied", verification: "passed", message });
     } catch (error) {
       operations.push({
         index,
         operation,
         status: "failed",
+        verification: "not_run",
         message: error instanceof Error ? error.message : "Unknown operation failure."
       });
       break;
     }
   }
 
-  const regenerationErrors = await client.inspectRegenerationErrors(plan.context).catch((error) => [{
-    featureId: "unknown",
-    featureName: "Regeneration check",
-    status: "CHECK_FAILED",
-    message: error instanceof Error ? error.message : "Unable to check regeneration status."
-  }]);
   const failed = operations.some((operation) => operation.status === "failed") || regenerationErrors.length > 0;
   plan.status = failed ? "failed" : "applied";
-  plan.result = { status: plan.status, operations, regenerationErrors };
+  plan.result = {
+    status: plan.status,
+    operations,
+    regenerationErrors,
+    preexistingRegenerationErrors
+  };
   saveSession(session);
   return plan;
 });

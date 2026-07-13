@@ -153,6 +153,22 @@ describe("installed Onshape extension pipeline", () => {
       elementId: "element",
       server: onshapeOrigin
     };
+    const repairedPlanResponse = await fetch(`${appOrigin}/api/plans`, {
+      method: "POST",
+      headers: sessionHeaders({ origin: appOrigin, "content-type": "application/json" }),
+      body: JSON.stringify({ prompt: "Exercise self-correcting plan validation", context })
+    });
+    expect(repairedPlanResponse.status).toBe(201);
+    expect(await repairedPlanResponse.json()).toMatchObject({
+      status: "pending",
+      agentTrace: {
+        planningAttempts: 2,
+        featureCount: 1,
+        dependencyCount: 0,
+        geometry: { solidBodyCount: 1, faceCount: 6, edgeCount: 12, vertexCount: 8 }
+      }
+    });
+
     const jobStart = await fetch(`${appOrigin}/api/plan-jobs`, {
       method: "POST",
       headers: sessionHeaders({ origin: appOrigin, "content-type": "application/json" }),
@@ -170,7 +186,7 @@ describe("installed Onshape extension pipeline", () => {
     }
     expect(completedJob).toMatchObject({
       status: "completed",
-      plan: { status: "pending" }
+      plan: { status: "pending", agentTrace: { planningAttempts: 1, featureCount: 1 } }
     });
 
     const planResponse = await fetch(`${appOrigin}/api/plans`, {
@@ -189,7 +205,15 @@ describe("installed Onshape extension pipeline", () => {
     });
     expect(applyResponse.status).toBe(200);
     const applied = await applyResponse.json();
-    expect(applied).toMatchObject({ status: "applied", result: { status: "applied", regenerationErrors: [] } });
+    expect(applied).toMatchObject({
+      status: "applied",
+      result: {
+        status: "applied",
+        regenerationErrors: [],
+        preexistingRegenerationErrors: [],
+        operations: [{ status: "applied", verification: "passed" }]
+      }
+    });
 
     const state = await fetch(`${onshapeOrigin}/__state`).then((response) => response.json()) as { feature: { name: string }; microversion: number };
     expect(state.feature.name).toBe("Base Extrusion");
@@ -309,6 +333,63 @@ describe("installed Onshape extension pipeline", () => {
     expect(createdExtrude?.parameters.find((parameter) => parameter.parameterId === "depth"))
       .toMatchObject({ expression: "15 mm" });
     expect(extrudeState.microversion).toBe(10);
+
+    const failurePlanResponse = await fetch(`${appOrigin}/api/plans`, {
+      method: "POST",
+      headers: sessionHeaders({ origin: appOrigin, "content-type": "application/json" }),
+      body: JSON.stringify({ prompt: "Trigger regeneration recovery", context })
+    });
+    expect(failurePlanResponse.status).toBe(201);
+    const failurePlan = await failurePlanResponse.json() as { id: string };
+    const failureApply = await fetch(`${appOrigin}/api/plans/${failurePlan.id}/apply`, {
+      method: "POST",
+      headers: sessionHeaders({ origin: appOrigin })
+    });
+    expect(failureApply.status).toBe(200);
+    expect(await failureApply.json()).toMatchObject({
+      status: "failed",
+      result: {
+        operations: [{ status: "failed", verification: "failed" }],
+        regenerationErrors: [{ featureName: "Broken Base", status: "ERROR" }]
+      }
+    });
+
+    const recoveryStart = await fetch(`${appOrigin}/api/plans/${failurePlan.id}/recovery-jobs`, {
+      method: "POST",
+      headers: sessionHeaders({ origin: appOrigin })
+    });
+    expect(recoveryStart.status).toBe(202);
+    const { id: recoveryJobId } = await recoveryStart.json() as { id: string };
+    let recoveryJob: { status?: string; plan?: { id: string; recoveryForPlanId?: string } } = {};
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      recoveryJob = await fetch(`${appOrigin}/api/plan-jobs/${recoveryJobId}`, {
+        headers: sessionHeaders()
+      }).then((response) => response.json());
+      if (recoveryJob.status !== "planning") break;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+    }
+    expect(recoveryJob).toMatchObject({
+      status: "completed",
+      plan: { recoveryForPlanId: failurePlan.id }
+    });
+    const recoveryApply = await fetch(`${appOrigin}/api/plans/${recoveryJob.plan!.id}/apply`, {
+      method: "POST",
+      headers: sessionHeaders({ origin: appOrigin })
+    });
+    expect(recoveryApply.status).toBe(200);
+    expect(await recoveryApply.json()).toMatchObject({
+      status: "applied",
+      result: {
+        regenerationErrors: [],
+        preexistingRegenerationErrors: [{ featureName: "Broken Base", status: "ERROR" }]
+      }
+    });
+    const recoveredState = await fetch(`${onshapeOrigin}/__state`).then((response) => response.json()) as {
+      feature: { name: string };
+      microversion: number;
+    };
+    expect(recoveredState.feature.name).toBe("Recovered Base");
+    expect(recoveredState.microversion).toBe(12);
   }, 20_000);
 
   it("rejects version contexts and unexpected Onshape stacks", async () => {

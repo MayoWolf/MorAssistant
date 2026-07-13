@@ -95,8 +95,8 @@ function ConnectionPill({ label, state }: { label: string; state: string }) {
   return <span className={`connection-pill ${state}`}><i />{label}</span>;
 }
 
-function SkeletonPlan() {
-  return <div className="plan skeleton" aria-label="Creating plan">
+function SkeletonPlan({ label = "Creating plan" }: { label?: string }) {
+  return <div className="plan skeleton" aria-label={label}>
     <div className="sk-line wide" /><div className="sk-line" />
     <div className="sk-op"><span /><div><i /><i /></div></div>
     <div className="sk-op"><span /><div><i /><i /></div></div>
@@ -139,7 +139,8 @@ export function App() {
   const [deviceLogin, setDeviceLogin] = useState<DeviceCodeLogin | null>(null);
   const [prompt, setPrompt] = useState("");
   const [plan, setPlan] = useState<StoredCadPlan | null>(null);
-  const [busy, setBusy] = useState<"planning" | "applying" | null>(null);
+  const [busy, setBusy] = useState<"planning" | "applying" | "recovering" | null>(null);
+  const [recoveryMessage, setRecoveryMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
 
@@ -182,7 +183,7 @@ export function App() {
   const createPlan = async (event: FormEvent) => {
     event.preventDefault();
     if (!context || !prompt.trim()) return;
-    setBusy("planning"); setError(null); setPlan(null);
+    setBusy("planning"); setError(null); setPlan(null); setRecoveryMessage(null);
     try {
       const job = await api<PlanJobResponse>("/api/plan-jobs", {
         method: "POST",
@@ -200,7 +201,15 @@ export function App() {
     if (!plan) return;
     setBusy("applying"); setError(null);
     try {
-      setPlan(await api<StoredCadPlan>(`/api/plans/${plan.id}/apply`, { method: "POST" }));
+      const applied = await api<StoredCadPlan>(`/api/plans/${plan.id}/apply`, { method: "POST" });
+      setPlan(applied);
+      if (applied.status === "failed" && !applied.recoveryForPlanId) {
+        setBusy("recovering");
+        const job = await api<PlanJobResponse>(`/api/plans/${applied.id}/recovery-jobs`, { method: "POST" });
+        const recovery = job.status === "completed" ? job.plan : await waitForPlan(job.id);
+        setPlan(recovery);
+        setRecoveryMessage("Execution stopped at the first new Onshape error. Codex re-read the updated model and prepared this recovery plan; nothing else will run until you approve it.");
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not apply the plan.");
     } finally {
@@ -210,7 +219,10 @@ export function App() {
 
   const updatePrompt = (value: string) => {
     setPrompt(value);
-    if (plan?.status === "pending") setPlan(null);
+    if (plan?.status === "pending") {
+      setPlan(null);
+      setRecoveryMessage(null);
+    }
   };
 
   const handlePromptKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -279,13 +291,20 @@ export function App() {
     </section>
 
     {(error || statusError) && <section className="notice error" role="alert"><strong>Something needs attention</strong><p>{error ?? statusError}</p></section>}
-    {busy === "planning" && <SkeletonPlan />}
+    {recoveryMessage && <section className="notice recovery"><strong>Recovery plan ready</strong><p>{recoveryMessage}</p></section>}
+    {(busy === "planning" || busy === "recovering") && <SkeletonPlan label={busy === "recovering" ? "Preparing a recovery plan" : "Creating plan"} />}
 
     {plan && <section className={`plan ${plan.status}`}>
       <div className="plan-heading">
         <div><span className="eyebrow">Proposed plan</span><h2>{plan.summary}</h2></div>
         <span className={`risk ${plan.risk}`}>{plan.risk} risk</span>
       </div>
+      {plan.agentTrace && <div className="agent-trace" aria-label="Model inspection summary">
+        <span><strong>{plan.agentTrace.featureCount}</strong><small>features read</small></span>
+        <span><strong>{plan.agentTrace.dependencyCount}</strong><small>dependency links</small></span>
+        <span><strong>{plan.agentTrace.geometry.solidBodyCount ?? plan.agentTrace.geometry.partCount ?? "—"}</strong><small>solid bodies</small></span>
+        <span><strong>{plan.agentTrace.planningAttempts}</strong><small>validation pass{plan.agentTrace.planningAttempts === 1 ? "" : "es"}</small></span>
+      </div>}
       <ol className="operations">
         {plan.operations.map((operation, index) => <li key={`${operation.type}-${index}`}>
           <span className="op-index">{String(index + 1).padStart(2, "0")}</span>
@@ -299,6 +318,7 @@ export function App() {
       </ol>
       {plan.warnings.length > 0 && <div className="warnings">{plan.warnings.map((warning) => <p key={warning}>△ {warning}</p>)}</div>}
       {plan.result?.regenerationErrors.length ? <div className="warnings error-list">{plan.result.regenerationErrors.map((item) => <p key={item.featureId}>! {item.featureName}: {item.message ?? item.status}</p>)}</div> : null}
+      {plan.result?.preexistingRegenerationErrors?.length ? <div className="existing-errors"><p>{plan.result.preexistingRegenerationErrors.length} pre-existing model error(s) were recorded separately and did not fail this plan.</p></div> : null}
       <div className="approval-bar">
         <div><strong>{plan.status === "pending" ? "Ready for review" : plan.status === "applied" ? "Changes applied" : "Execution stopped"}</strong><small>{plan.status === "pending" ? "Onshape can undo applied edits." : `${plan.result?.operations.filter((item) => item.status === "applied").length ?? 0} operation(s) applied.`}</small></div>
         {plan.status === "pending" && <button className="apply-button" onClick={() => void applyPlan()} disabled={busy !== null}>{busy === "applying" ? "Applying…" : "Approve & apply"}</button>}

@@ -67,7 +67,30 @@ const onshape = createServer(async (request, response) => {
       serializationVersion: "1.2.4",
       sourceMicroversion: `m${microversion}`,
       features: [feature, ...sketches],
-      featureStates: Object.fromEntries([feature, ...sketches].map((item) => [item.featureId, { featureStatus: "OK" }]))
+      featureStates: Object.fromEntries([feature, ...sketches].map((item) => [item.featureId, item.name === "Broken Base"
+        ? { featureStatus: "ERROR", message: "Deterministic regeneration fixture failure" }
+        : { featureStatus: "OK" }
+      ]))
+    });
+  }
+  if (request.method === "GET" && /\/api\/v13\/partstudios\/d\/[^/]+\/w\/[^/]+\/e\/[^/]+\/bodydetails$/.test(url.pathname)) {
+    return json(response, 200, {
+      bodies: [{
+        id: "part-1",
+        bodyType: "solid",
+        faces: new Array(6).fill(null).map((_, index) => ({ id: `face-${index + 1}` })),
+        edges: new Array(12).fill(null).map((_, index) => ({ id: `edge-${index + 1}` })),
+        vertices: new Array(8).fill(null).map((_, index) => ({ id: `vertex-${index + 1}` }))
+      }]
+    });
+  }
+  if (request.method === "GET" && /\/api\/v13\/partstudios\/d\/[^/]+\/w\/[^/]+\/e\/[^/]+\/massproperties$/.test(url.pathname)) {
+    const aggregate = { mass: [0.01], volume: [0.000001], centroid: [0, 0, 0], hasMass: true };
+    return json(response, 200, { microversionId: `m${microversion}`, bodies: { "-all-": aggregate, "part-1": aggregate } });
+  }
+  if (request.method === "POST" && /\/api\/v13\/partstudios\/d\/[^/]+\/w\/[^/]+\/e\/[^/]+\/featurescript$/.test(url.pathname)) {
+    return json(response, 200, {
+      result: { solidBodyCount: 1, faceCount: 6, edgeCount: 12, vertexCount: 8 }
     });
   }
   if (request.method === "POST" && /\/api\/v13\/partstudios\/d\/[^/]+\/w\/[^/]+\/e\/[^/]+\/features\/featureid\/f1$/.test(url.pathname)) {

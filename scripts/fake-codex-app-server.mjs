@@ -15,10 +15,59 @@ function send(message) {
 
 function planFromInput(params) {
   const text = params?.input?.find((item) => item?.type === "text")?.text ?? "";
-  const marker = "Current Part Studio feature snapshot:\n";
+  const marker = "Current Part Studio model snapshot:\n";
   const markerIndex = text.indexOf(marker);
-  const snapshot = markerIndex >= 0 ? JSON.parse(text.slice(markerIndex + marker.length)) : [];
+  const model = markerIndex >= 0 ? JSON.parse(text.slice(markerIndex + marker.length)) : { features: [] };
+  const snapshot = model.features ?? [];
   const userRequest = markerIndex >= 0 ? text.slice(0, markerIndex) : text;
+  if (/self-correct/i.test(userRequest) && !/previous proposed plan failed trusted-host validation/i.test(userRequest)) {
+    const feature = snapshot[0];
+    return {
+      summary: "Deliberately invalid first attempt",
+      risk: "low",
+      operations: [{
+        type: "rename_feature",
+        featureId: "invented-feature-id",
+        currentName: feature?.name ?? "Unknown",
+        newName: "Corrected Feature",
+        reason: "Exercises trusted-host repair feedback"
+      }],
+      warnings: [],
+      requiresApproval: true
+    };
+  }
+  if (/Create a recovery plan for a partially executed Onshape request/i.test(userRequest)) {
+    const feature = snapshot[0];
+    return {
+      summary: "Recover the failed base feature without repeating successful work",
+      risk: "low",
+      operations: [{
+        type: "rename_feature",
+        featureId: feature.featureId,
+        currentName: feature.name,
+        newName: "Recovered Base",
+        reason: "Uses the refreshed model state to remove the regeneration fixture condition"
+      }],
+      warnings: ["This is a separately approval-gated recovery plan."],
+      requiresApproval: true
+    };
+  }
+  if (/trigger regeneration recovery/i.test(userRequest)) {
+    const feature = snapshot[0];
+    return {
+      summary: "Trigger the deterministic regeneration recovery fixture",
+      risk: "low",
+      operations: [{
+        type: "rename_feature",
+        featureId: feature.featureId,
+        currentName: feature.name,
+        newName: "Broken Base",
+        reason: "Exercises per-operation regeneration verification"
+      }],
+      warnings: [],
+      requiresApproval: true
+    };
+  }
   if (/extrude/i.test(userRequest)) {
     const sketch = snapshot.find((item) => item?.featureType === "newSketch");
     if (!sketch?.name) throw new Error("The fake planner needs a sketch to extrude.");

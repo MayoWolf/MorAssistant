@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildOnshapeAuthorizationUrl,
+  buildFeatureDependencyGraph,
   buildRectangleSketchFeature,
   exchangeOnshapeCode,
   featureFingerprint,
@@ -37,6 +38,69 @@ describe("Onshape OAuth", () => {
 });
 
 describe("Onshape feature edits", () => {
+  it("builds explicit upstream and downstream feature dependencies", () => {
+    const graph = buildFeatureDependencyGraph({
+      features: [{
+        featureId: "sketch-1",
+        featureType: "newSketch",
+        name: "Base profile",
+        parameters: []
+      }, {
+        featureId: "extrude-1",
+        featureType: "extrude",
+        name: "Base extrusion",
+        parameters: [{
+          parameterId: "entities",
+          queries: [{ featureId: "sketch-1" }]
+        }]
+      }],
+      featureStates: {
+        "sketch-1": { featureStatus: "OK" },
+        "extrude-1": { featureStatus: "WARNING" }
+      }
+    });
+    expect(graph[0]).toMatchObject({ featureId: "sketch-1", dependsOn: [], usedBy: ["extrude-1"], status: "OK" });
+    expect(graph[1]).toMatchObject({ featureId: "extrude-1", dependsOn: ["sketch-1"], usedBy: [], status: "WARNING" });
+  });
+
+  it("combines feature, topology, FeatureScript, and mass-property inspection", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        libraryVersion: 3000,
+        features: [{ featureId: "f1", featureType: "extrude", name: "Base", parameters: [] }],
+        featureStates: { f1: { featureStatus: "OK" } }
+      }), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        bodies: [{ faces: new Array(6).fill({}), edges: new Array(12).fill({}), vertices: new Array(8).fill({}) }]
+      }), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        bodies: {
+          "-all-": { volume: [0.000001], mass: [0.01], centroid: [0.1, 0.2, 0.3] },
+          p1: { volume: [0.000001] }
+        }
+      }), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        result: { solidBodyCount: 1, faceCount: 6, edgeCount: 12, vertexCount: 8 }
+      }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new OnshapeClient({ accessToken: () => "token" });
+    const inspection = await client.inspectPartStudio({ documentId: "d", workspaceId: "w", elementId: "e" });
+    expect(inspection.warnings).toEqual([]);
+    expect(inspection.geometry).toEqual({
+      bodyCount: 1,
+      solidBodyCount: 1,
+      faceCount: 6,
+      edgeCount: 12,
+      vertexCount: 8,
+      partCount: 1,
+      volumeM3: 0.000001,
+      massKg: 0.01,
+      centroidM: [0.1, 0.2, 0.3]
+    });
+    expect(String(fetchMock.mock.calls[3]?.[0])).toContain("/featurescript?rollbackBarIndex=-1");
+    expect(JSON.parse(String((fetchMock.mock.calls[3]?.[1] as RequestInit).body))).toMatchObject({ libraryVersion: 3000 });
+  });
+
   it("reads the active Part Studio configuration", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ features: [] }), {
       status: 200,

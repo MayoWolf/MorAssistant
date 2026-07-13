@@ -45,7 +45,40 @@ MorAssistant is a free, open-source **Onshape right-panel copilot** powered by C
 
 | Native workflow | Approval is a boundary | Stale-plan protection | Isolated credentials |
 |:--|:--|:--|:--|
-| Opens from the Part Studio element sidebar. | Planning cannot mutate CAD. Apply is a separate request. | A preview is rejected if its feature name, parameter expression, or microversion is no longer current. | Onshape tokens stay in encrypted storage; each Codex user gets a separate `CODEX_HOME`. |
+| Opens from the Part Studio element sidebar. | Planning cannot mutate CAD. Apply is a separate request. | A preview is rejected if its feature name, parameter expression, payload hash, or microversion is no longer current. | Onshape tokens stay in encrypted storage; each Codex user gets a separate `CODEX_HOME`. |
+
+## From a sentence to a native parametric model
+
+MorAssistant does not draw pixels and it does not upload a mesh. It reads and edits Onshape's actual feature database.
+
+```mermaid
+flowchart TD
+  U["1 · Understand the request"] --> R["2 · Read the active model"]
+  R --> G["3 · Build dependency + geometry context"]
+  G --> P["4 · Produce a typed native plan"]
+  P --> V{"Trusted validation passes?"}
+  V -->|"No · return exact feedback"| P
+  V -->|"Yes"| A["5 · Show every operation for approval"]
+  A -->|"Approved"| E["6 · Apply one operation"]
+  E --> C{"Onshape rebuild is clean?"}
+  C -->|"Yes · more work"| E
+  C -->|"Yes · complete"| D["Native Part Studio updated"]
+  C -->|"No"| S["Stop immediately + prepare recovery plan"]
+  S --> A
+```
+
+The model context is deliberately CAD-shaped:
+
+| Context | What the agent receives | Why it matters |
+|:--|:--|:--|
+| Feature definitions | IDs, names, types, editable expressions, bounded native BTM payloads, exact hashes | Enables precise edits without guessing existing identifiers |
+| Dependency graph | Direct `dependsOn` and `usedBy` edges for every feature | Exposes downstream blast radius before replace/delete operations |
+| Design intent signals | Repeated literal expressions and existing `#variable` references | Supports variable extraction and parametric cleanup |
+| Geometry | Solid/body, face, edge, and vertex counts plus bounded body details | Gives the planner topology evidence instead of only feature names |
+| Physical properties | Part count, volume, mass, and centroid when Onshape can calculate them | Helps check scale and geometric plausibility |
+| Rebuild state | Per-feature Onshape status before and after each edit | Separates pre-existing problems from failures introduced by the plan |
+
+Read-only geometric analysis uses Onshape's FeatureScript evaluation API. Persistent changes use Onshape's native Feature API, so the result remains editable, ordered, parametric CAD. Invalid model output is not merely rejected: the validation failure is fed back into the same planning thread for up to three bounded repair passes.
 
 ## Use it inside Onshape
 
@@ -76,21 +109,26 @@ The complete Developer Portal configuration and private-install test are in [doc
 
 | Capability | Status | Guardrail |
 |:--|:--:|:--|
-| Read the active Part Studio feature tree | ✅ | Workspace and Onshape-origin validation |
+| Read the active Part Studio model | ✅ | Feature payload, dependency, topology, mass-property, and rebuild inspection |
+| Evaluate FeatureScript for geometry analysis | ✅ | Read-only lambda evaluation; no persistent mutation |
+| Self-correct an invalid generated plan | ✅ | Up to three schema + live feature-tree validation passes |
 | Create rectangle and square sketches on Top | ✅ | Typed millimeter geometry, unique names, captured v15 payload fixture |
 | Create any standard native Part Studio feature | ✅ Beta | Bounded BTM payload, ordered feature-name references, Onshape v15 validation |
 | Replace a complete existing feature | ✅ Beta | Exact SHA-256 snapshot match plus microversion guard |
 | Delete an existing feature | ✅ | Exact ID/name match, high-risk preview, explicit approval |
 | Rename existing features | ✅ | Exact feature ID and current-name match |
 | Update existing quantity expressions | ✅ | Exact parameter ID and current-expression match |
-| Inspect post-apply regeneration state | ✅ | Failed regeneration marks the plan failed |
+| Verify every operation against regeneration | ✅ | Stop immediately on the first newly introduced Onshape error |
+| Prepare a recovery plan after failure | ✅ | Re-reads partially changed state; recovery requires a fresh approval |
 | Reject replay and double approval | ✅ | Durable plan status plus concurrency guards |
 | Survive backend restarts | ✅ | Encrypted SQLite sessions and persistent Codex credentials |
 | Edit versions | Refused | Versions are immutable; only `w` contexts are accepted |
 | Edit dimensions in custom configurations | Refused | Renames remain available; ambiguous configured edits fail closed |
 | Assemblies, drawings, releases, and document administration | Roadmap | The current extension is intentionally scoped to the active Part Studio |
 
-Common operations use dedicated typed builders. Everything else in the active Part Studio can use the bounded native-feature fallback: Codex proposes the exact payload, the panel labels it as a native operation, the API validates its structure and references, and Onshape performs final v15 feature validation after approval.
+Common operations use dedicated typed builders. Everything else in the active Part Studio can use the bounded native-feature fallback: Codex proposes the exact payload, the panel labels it as a native operation, the API validates its structure and references, and Onshape performs final feature validation after approval. Assemblies, drawings, release workflows, and persistent custom FeatureScript definitions need their own element-specific APIs and are not silently treated as Part Studio operations.
+
+For the detailed data flow, trust boundaries, state machine, and failure behavior, read **[Architecture: how MorAssistant reasons and recovers →](docs/architecture.md)**.
 
 ## The trust boundary
 
@@ -102,16 +140,17 @@ flowchart LR
 
   subgraph Backend["Persistent private backend"]
     A --> S["Encrypted sessions<br/>SQLite · AES-256-GCM"]
-    A --> C["Codex app-server<br/>isolated CODEX_HOME"]
+    A --> I["Model inspector<br/>features · dependencies · geometry"]
+    I --> C["Codex app-server<br/>isolated CODEX_HOME"]
     C -->|strict JSON plan| A
-    A --> V["Schema + feature-tree<br/>validation"]
+    A --> V["Schema + live-model<br/>validation + repair feedback"]
   end
 
   V -->|preview only| P
   U -->|explicit approval| P
   P -->|apply saved plan ID| A
   A -->|approved typed operation| O["Onshape OAuth + Feature API"]
-  O -->|regeneration result| A
+  O -->|regeneration after every operation| A
 ```
 
 The model never receives an Onshape OAuth token, never sends arbitrary REST requests, and never performs CAD mutations during planning. The API accepts only the typed operation set defined in `@morassistant/cad-command-schema`.
@@ -121,8 +160,11 @@ The model never receives an Onshape OAuth token, never sends arbitrary REST requ
 - **Preview before mutation** — creating a plan and applying it are separate endpoints.
 - **Timeout-resistant planning** — the panel starts a background planning job and polls it, so a long Codex turn never depends on a CDN request timeout.
 - **Strict structured output** — Codex output is normalized and parsed through a closed schema.
+- **Bounded self-repair** — invalid generated plans receive precise validator feedback for at most three attempts.
+- **Dependency-aware impact** — direct downstream dependents are surfaced before whole-feature replacement or deletion.
 - **Current-state validation** — feature names, parameter expressions, and Onshape concurrency metadata must still match.
-- **Fail closed** — execution stops on the first failed operation.
+- **Per-operation verification** — execution stops on the first operation that introduces a new regeneration error.
+- **Approval-gated recovery** — a failed run can generate an alternate plan from the refreshed model, but cannot apply it automatically.
 - **Replay resistance** — pending plans transition atomically and cannot be applied twice.
 - **Origin checks** — state-changing browser requests must come from the configured panel origin.
 - **Minimum secrets exposure** — Codex child processes inherit a deliberately small environment with no backend OAuth secrets.
@@ -192,8 +234,10 @@ npm audit --omit=dev
 - Codex device-code completion and event-race handling;
 - the current Codex app-server sandbox and structured-output protocol;
 - plan validation against a live feature snapshot;
+- dependency, topology, FeatureScript, and mass-property inspection;
+- bounded correction of an initially invalid Codex plan;
 - approval-gated typed and native feature creation, whole-feature replacement, deletion, rename, and dimension mutations;
-- regeneration inspection;
+- per-operation regeneration inspection, fail-fast execution, and approval-gated recovery planning;
 - stale-plan, replay, and concurrent duplicate-apply rejection;
 - iframe, CORS, request-origin, workspace, configuration, and Onshape-stack guards.
 
