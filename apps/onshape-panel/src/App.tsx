@@ -208,7 +208,13 @@ export function App() {
         const job = await api<PlanJobResponse>(`/api/plans/${applied.id}/recovery-jobs`, { method: "POST" });
         const recovery = job.status === "completed" ? job.plan : await waitForPlan(job.id);
         setPlan(recovery);
-        setRecoveryMessage("Execution stopped at the first new Onshape error. Codex re-read the updated model and prepared this recovery plan; nothing else will run until you approve it.");
+        const appliedCount = applied.result?.operations.filter((item) => item.status === "applied").length ?? 0;
+        const stoppedAt = applied.result?.operations.find((item) => item.status === "failed" || item.verification !== "passed");
+        setRecoveryMessage([
+          `Execution stopped after ${appliedCount} operation${appliedCount === 1 ? "" : "s"} applied.`,
+          stoppedAt ? `Stopped at operation ${stoppedAt.index + 1}: ${stoppedAt.message}` : undefined,
+          "Codex re-read the updated model and prepared this recovery plan; nothing else will run until you approve it."
+        ].filter(Boolean).join(" "));
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not apply the plan.");

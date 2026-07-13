@@ -137,6 +137,21 @@ const onshape = createServer(async (request, response) => {
     if (!isSketch && !isNativeFeature) {
       return json(response, 400, { message: "invalid native feature fixture" });
     }
+    if (body.feature?.featureType === "extrude") {
+      const parameters = new Map((body.feature.parameters ?? []).map((parameter) => [parameter.parameterId, parameter]));
+      const region = parameters.get("entities")?.queries?.[0];
+      const canonicalExtrude = body.feature.suppressed === false
+        && body.feature.returnAfterSubfeatures === false
+        && parameters.get("bodyType")?.enumName === "ExtendedToolBodyType"
+        && parameters.get("operationType")?.enumName === "NewBodyOperationType"
+        && parameters.get("endBound")?.enumName === "BoundingType"
+        && parameters.get("oppositeDirection")?.value === false
+        && parameters.get("symmetric")?.value === false
+        && region?.btType === "BTMIndividualSketchRegionQuery-140"
+        && region?.deterministicIds?.[0] === "JOC"
+        && typeof region?.queryString === "string";
+      if (!canonicalExtrude) return json(response, 400, { message: "non-canonical extrude fixture" });
+    }
     const sketch = { ...structuredClone(body.feature), featureId: `feature-${++sketchCounter}` };
     sketches.push(sketch);
     microversion += 1;

@@ -101,6 +101,18 @@ export interface AppliedOperation {
   response: unknown;
 }
 
+function upstreamErrorDetail(body: unknown): string | undefined {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
+  const record = body as Record<string, unknown>;
+  for (const key of ["message", "errorMessage", "error_description", "error"]) {
+    const value = record[key];
+    if (typeof value !== "string") continue;
+    const clean = value.replace(/[\u0000-\u001f\u007f]+/gu, " ").replace(/\s+/gu, " ").trim();
+    if (clean) return clean.slice(0, 300);
+  }
+  return undefined;
+}
+
 export function featureFingerprint(feature: Record<string, unknown>): string {
   return createHash("sha256").update(JSON.stringify(feature)).digest("hex");
 }
@@ -253,14 +265,60 @@ function resolveFeatureReferences(value: unknown, features: OnshapeFeature[]): u
 function canonicalizeFeaturePayload(feature: Record<string, unknown>): Record<string, unknown> {
   const canonical = structuredClone(feature);
   if (canonical.featureType === "extrude" && Array.isArray(canonical.parameters)) {
+    canonical.namespace ??= "";
+    canonical.suppressed ??= false;
+    canonical.returnAfterSubfeatures ??= false;
+    canonical.subFeatures ??= [];
+    canonical.parameterLibraries ??= [];
+    canonical.suppressionState ??= null;
+    const enumNames: Record<string, string> = {
+      bodyType: "ExtendedToolBodyType",
+      operationType: "NewBodyOperationType",
+      endBound: "BoundingType",
+      startBound: "BoundingType",
+      secondDirectionBound: "BoundingType"
+    };
     for (const parameter of canonical.parameters) {
       if (parameter && typeof parameter === "object") {
         const record = parameter as Record<string, unknown>;
-        if (record.parameterId === "bodyType" && record.btType === "BTMParameterEnum-145") {
-          record.enumName = "ExtendedToolBodyType";
+        record.libraryRelationType ??= "DEFAULT";
+        record.parameterName ??= "";
+        const parameterId = typeof record.parameterId === "string" ? record.parameterId : "";
+        if (record.btType === "BTMParameterEnum-145" && enumNames[parameterId]) {
+          record.namespace ??= "";
+          record.enumName = enumNames[parameterId];
+        }
+        if (record.btType === "BTMParameterQuantity-147") {
+          record.isInteger ??= false;
+          record.value ??= 0;
+          record.units ??= "";
+        }
+        if (record.btType === "BTMParameterQueryList-148" && Array.isArray(record.queries)) {
+          for (const query of record.queries) {
+            if (!query || typeof query !== "object") continue;
+            const queryRecord = query as Record<string, unknown>;
+            if (queryRecord.btType !== "BTMIndividualSketchRegionQuery-140" || typeof queryRecord.featureId !== "string") continue;
+            queryRecord.queryStatement ??= null;
+            queryRecord.filterInnerLoops ??= false;
+            queryRecord.deterministicIds ??= ["JOC"];
+            queryRecord.queryString ??= `query = qSketchRegion(id + ${JSON.stringify(`F${queryRecord.featureId}`)}, false);`;
+          }
         }
       }
     }
+    const parameters = canonical.parameters as Array<Record<string, unknown>>;
+    const ensureBoolean = (parameterId: string): void => {
+      if (parameters.some((parameter) => parameter?.parameterId === parameterId)) return;
+      parameters.push({
+        btType: "BTMParameterBoolean-144",
+        libraryRelationType: "DEFAULT",
+        value: false,
+        parameterId,
+        parameterName: ""
+      });
+    };
+    ensureBoolean("oppositeDirection");
+    ensureBoolean("symmetric");
   }
   return canonical;
 }
@@ -394,7 +452,14 @@ export class OnshapeClient {
         rateLimitRemaining
       );
     }
-    if (!response.ok) throw new OnshapeApiError(`Onshape API request failed (${response.status}).`, response.status, body);
+    if (!response.ok) {
+      const detail = upstreamErrorDetail(body);
+      throw new OnshapeApiError(
+        `Onshape API request failed (${response.status}).${detail ? ` ${detail}` : ""}`,
+        response.status,
+        body
+      );
+    }
     return body as T;
   }
 

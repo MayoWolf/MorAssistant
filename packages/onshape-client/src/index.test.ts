@@ -65,6 +65,18 @@ describe("Onshape feature edits", () => {
       .rejects.toThrow("retry in 450 seconds");
   });
 
+  it("surfaces a bounded Onshape validation message for rejected native payloads", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      message: "Missing enumName for operationType\nwith control detail"
+    }), {
+      status: 400,
+      headers: { "content-type": "application/json" }
+    })));
+    const client = new OnshapeClient({ accessToken: () => "token" });
+    await expect(client.listFeatures({ documentId: "d", workspaceId: "w", elementId: "e" }))
+      .rejects.toThrow("Onshape API request failed (400). Missing enumName for operationType with control detail");
+  });
+
   it("builds explicit upstream and downstream feature dependencies", () => {
     const graph = buildFeatureDependencyGraph({
       features: [{
@@ -265,9 +277,24 @@ describe("Onshape feature edits", () => {
             value: "SOLID"
           },
           {
+            btType: "BTMParameterEnum-145",
+            parameterId: "operationType",
+            value: "NEW"
+          },
+          {
             btType: "BTMParameterQueryList-148",
             parameterId: "entities",
             queries: [{ btType: "BTMIndividualSketchRegionQuery-140", featureId: "@feature:Profile" }]
+          },
+          {
+            btType: "BTMParameterEnum-145",
+            parameterId: "endBound",
+            value: "BLIND"
+          },
+          {
+            btType: "BTMParameterQuantity-147",
+            parameterId: "depth",
+            expression: "12 mm"
           }
         ]
       }),
@@ -278,6 +305,26 @@ describe("Onshape feature edits", () => {
       .toBe("sketch-1");
     expect(body.feature.parameters.find((parameter: { parameterId: string }) => parameter.parameterId === "bodyType").enumName)
       .toBe("ExtendedToolBodyType");
+    expect(body.feature).toMatchObject({
+      namespace: "",
+      suppressed: false,
+      returnAfterSubfeatures: false,
+      subFeatures: [],
+      parameterLibraries: [],
+      suppressionState: null
+    });
+    const byId = new Map(body.feature.parameters.map((parameter: { parameterId: string }) => [parameter.parameterId, parameter]));
+    expect(byId.get("operationType")).toMatchObject({ enumName: "NewBodyOperationType", libraryRelationType: "DEFAULT" });
+    expect(byId.get("endBound")).toMatchObject({ enumName: "BoundingType", libraryRelationType: "DEFAULT" });
+    expect(byId.get("depth")).toMatchObject({ isInteger: false, value: 0, units: "", libraryRelationType: "DEFAULT" });
+    expect(byId.get("oppositeDirection")).toMatchObject({ btType: "BTMParameterBoolean-144", value: false });
+    expect(byId.get("symmetric")).toMatchObject({ btType: "BTMParameterBoolean-144", value: false });
+    expect((byId.get("entities") as { queries: Array<Record<string, unknown>> }).queries[0]).toMatchObject({
+      featureId: "sketch-1",
+      deterministicIds: ["JOC"],
+      filterInnerLoops: false,
+      queryString: 'query = qSketchRegion(id + "Fsketch-1", false);'
+    });
   });
 
   it("guards whole-feature replacement with a fingerprint", async () => {
