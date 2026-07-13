@@ -51,7 +51,7 @@ See [Onshape installation configuration](docs/onshape-installation.md) for the e
 
 MorAssistant is free and open-source software under the [Apache License 2.0](LICENSE). It is an independent project and is not affiliated with, endorsed by, or sponsored by Onshape, PTC, or OpenAI.
 
-The public panel origin is [morassistant-onshape.netlify.app](https://morassistant-onshape.netlify.app). The frontend is deployed; a persistent API/Codex container must be connected before this origin can complete Onshape OAuth or planning.
+The public panel origin is [morassistant-onshape.netlify.app](https://morassistant-onshape.netlify.app). For a personal installation, the persistent API/Codex container runs locally and is exposed through Tailscale Funnel. See [Personal deployment with Tailscale Funnel](docs/personal-tailscale-deployment.md).
 
 ## Local setup
 
@@ -100,7 +100,7 @@ Onshape requires public extension pages and OAuth callbacks to use HTTPS. Set `A
 
 The panel can instead be hosted on Netlify while the API runs on a separate persistent container. Set `VITE_API_ORIGIN` during the Netlify build and set the API's `APP_ORIGIN` to the exact Netlify panel origin. See [Netlify frontend deployment](docs/netlify-deployment.md).
 
-The production container and persistent-volume procedure are documented in [Persistent backend deployment](docs/backend-deployment.md).
+The zero-cost personal procedure is documented in [Personal deployment with Tailscale Funnel](docs/personal-tailscale-deployment.md). A generic managed-container procedure remains in [Persistent backend deployment](docs/backend-deployment.md).
 
 ## Codex authentication and model selection
 

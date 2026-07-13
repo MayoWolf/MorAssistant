@@ -46,7 +46,9 @@ SESSION_DB_PATH=/data/morassistant.sqlite
 CODEX_USERS_ROOT=/data/codex-users
 ```
 
-Mount a persistent private volume at `/data`. Add `SESSION_SECRET`, the separate `SESSION_ENCRYPTION_KEY`, and the remaining secrets from `.env.example` through the container host's secret manager. Never add them to Netlify's frontend build environment because `VITE_` values are public in the browser bundle.
+For the single-user zero-cost deployment, run the backend through Tailscale Funnel as described in [Personal deployment with Tailscale Funnel](personal-tailscale-deployment.md), then use that printed HTTPS origin for `VITE_API_ORIGIN`.
+
+For a managed container host, mount a persistent private volume at `/data`. Add `SESSION_SECRET`, the separate `SESSION_ENCRYPTION_KEY`, and the remaining secrets from `.env.example` through the container host's secret manager. Never add them to Netlify's frontend build environment because `VITE_` values are public in the browser bundle.
 
 ## Onshape application URLs
 

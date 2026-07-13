@@ -16,6 +16,8 @@
     "test:watch": "vitest",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "check": "npm run typecheck && npm run build && vitest run",
+    "local:deploy": "./scripts/local-deploy.sh",
+    "local:stop": "./scripts/local-stop.sh",
     "mock:pipeline": "npm run build && node scripts/run-mock-pipeline.mjs",
     "mcp": "npm run start -w @morassistant/onshape-mcp"
   },

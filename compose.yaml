@@ -1,0 +1,34 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: morassistant-api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      APP_ORIGIN: ${APP_ORIGIN:?APP_ORIGIN is required}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      SESSION_ENCRYPTION_KEY: ${SESSION_ENCRYPTION_KEY:?SESSION_ENCRYPTION_KEY is required}
+      SESSION_DB_PATH: /data/morassistant.sqlite
+      ONSHAPE_CLIENT_ID: ${ONSHAPE_CLIENT_ID:?ONSHAPE_CLIENT_ID is required}
+      ONSHAPE_CLIENT_SECRET: ${ONSHAPE_CLIENT_SECRET:?ONSHAPE_CLIENT_SECRET is required}
+      ONSHAPE_REDIRECT_URI: ${ONSHAPE_REDIRECT_URI:?ONSHAPE_REDIRECT_URI is required}
+      ONSHAPE_AUTHORIZATION_URL: https://oauth.onshape.com/oauth/authorize
+      ONSHAPE_TOKEN_URL: https://oauth.onshape.com/oauth/token
+      ONSHAPE_BASE_URL: https://cad.onshape.com
+      ONSHAPE_API_VERSION: v15
+      CODEX_COMMAND: codex
+      CODEX_USERS_ROOT: /data/codex-users
+      CODEX_MAX_WORKERS: "1"
+      CODEX_IDLE_TIMEOUT_MS: "900000"
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - morassistant-data:/data
+
+volumes:
+  morassistant-data:
+    name: morassistant-data
