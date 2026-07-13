@@ -97,40 +97,95 @@ export const CAD_PLAN_JSON_SCHEMA = {
       minItems: 1,
       maxItems: 25,
       items: {
-        oneOf: [
-          {
-            type: "object",
-            additionalProperties: false,
-            required: ["type", "featureId", "currentName", "newName", "reason"],
-            properties: {
-              type: { const: "rename_feature" },
-              featureId: { type: "string", minLength: 1 },
-              currentName: { type: "string", minLength: 1 },
-              newName: { type: "string", minLength: 1, maxLength: 100 },
-              reason: { type: "string", minLength: 1, maxLength: 500 }
-            }
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "type",
+          "featureId",
+          "currentName",
+          "newName",
+          "featureName",
+          "parameterId",
+          "currentExpression",
+          "newExpression",
+          "reason"
+        ],
+        properties: {
+          type: { type: "string", enum: ["rename_feature", "update_dimension"] },
+          featureId: { type: "string", minLength: 1 },
+          currentName: {
+            type: ["string", "null"],
+            description: "Current feature name for rename_feature; null for update_dimension."
           },
-          {
-            type: "object",
-            additionalProperties: false,
-            required: ["type", "featureId", "featureName", "parameterId", "currentExpression", "newExpression", "reason"],
-            properties: {
-              type: { const: "update_dimension" },
-              featureId: { type: "string", minLength: 1 },
-              featureName: { type: "string", minLength: 1 },
-              parameterId: { type: "string", minLength: 1 },
-              currentExpression: { type: "string", minLength: 1 },
-              newExpression: { type: "string", minLength: 1, maxLength: 100 },
-              reason: { type: "string", minLength: 1, maxLength: 500 }
-            }
-          }
-        ]
+          newName: {
+            type: ["string", "null"],
+            maxLength: 100,
+            description: "New feature name for rename_feature; null for update_dimension."
+          },
+          featureName: {
+            type: ["string", "null"],
+            description: "Current feature name for update_dimension; null for rename_feature."
+          },
+          parameterId: {
+            type: ["string", "null"],
+            description: "Parameter ID for update_dimension; null for rename_feature."
+          },
+          currentExpression: {
+            type: ["string", "null"],
+            description: "Current expression for update_dimension; null for rename_feature."
+          },
+          newExpression: {
+            type: ["string", "null"],
+            maxLength: 100,
+            description: "New expression for update_dimension; null for rename_feature."
+          },
+          reason: { type: "string", minLength: 1, maxLength: 500 }
+        }
       }
     },
     warnings: { type: "array", maxItems: 10, items: { type: "string", maxLength: 500 } },
     requiresApproval: { const: true }
   }
 } as const;
+
+/**
+ * Structured Outputs does not support a oneOf discriminated union. The wire
+ * schema therefore uses one closed object with nullable operation-specific
+ * fields; this converts it back to the strict domain union before validation.
+ */
+export function normalizeCadPlanOutput(input: unknown): unknown {
+  if (!input || typeof input !== "object") return input;
+  const plan = input as Record<string, unknown>;
+  if (!Array.isArray(plan.operations)) return input;
+  return {
+    ...plan,
+    operations: plan.operations.map((operation) => {
+      if (!operation || typeof operation !== "object") return operation;
+      const value = operation as Record<string, unknown>;
+      if (value.type === "rename_feature") {
+        return {
+          type: value.type,
+          featureId: value.featureId,
+          currentName: value.currentName,
+          newName: value.newName,
+          reason: value.reason
+        };
+      }
+      if (value.type === "update_dimension") {
+        return {
+          type: value.type,
+          featureId: value.featureId,
+          featureName: value.featureName,
+          parameterId: value.parameterId,
+          currentExpression: value.currentExpression,
+          newExpression: value.newExpression,
+          reason: value.reason
+        };
+      }
+      return operation;
+    })
+  };
+}
 
 export function validatePlanAgainstFeatureTree(
   plan: CadPlan,

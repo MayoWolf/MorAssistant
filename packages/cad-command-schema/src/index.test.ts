@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { cadPlanSchema, validatePlanAgainstFeatureTree } from "./index.js";
+import {
+  CAD_PLAN_JSON_SCHEMA,
+  cadPlanSchema,
+  normalizeCadPlanOutput,
+  validatePlanAgainstFeatureTree
+} from "./index.js";
 
 const plan = cadPlanSchema.parse({
   summary: "Rename the base sketch",
@@ -37,5 +42,27 @@ describe("CAD plan validation", () => {
       ...plan,
       operations: [{ ...rename, newName: rename.currentName }]
     }).success).toBe(false);
+  });
+
+  it("normalizes the Structured Outputs wire shape without unsupported unions", () => {
+    expect(JSON.stringify(CAD_PLAN_JSON_SCHEMA)).not.toContain("oneOf");
+    const wirePlan = {
+      summary: "Rename the base sketch",
+      risk: "low",
+      operations: [{
+        type: "rename_feature",
+        featureId: "f1",
+        currentName: "Sketch 1",
+        newName: "Base profile",
+        featureName: null,
+        parameterId: null,
+        currentExpression: null,
+        newExpression: null,
+        reason: "Clarifies design intent"
+      }],
+      warnings: [],
+      requiresApproval: true
+    };
+    expect(cadPlanSchema.parse(normalizeCadPlanOutput(wirePlan))).toEqual(plan);
   });
 });

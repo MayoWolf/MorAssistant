@@ -3,7 +3,12 @@ import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
-import { CAD_PLAN_JSON_SCHEMA, cadPlanSchema, type CadPlan } from "@morassistant/cad-command-schema";
+import {
+  CAD_PLAN_JSON_SCHEMA,
+  cadPlanSchema,
+  normalizeCadPlanOutput,
+  type CadPlan
+} from "@morassistant/cad-command-schema";
 import type { FeatureListResponse } from "@morassistant/onshape-client";
 
 interface RpcResponse {
@@ -294,7 +299,7 @@ export class CodexWorker {
     } catch {
       throw new Error("Codex returned a plan that was not valid JSON.");
     }
-    return cadPlanSchema.parse(parsed);
+    return cadPlanSchema.parse(normalizeCadPlanOutput(parsed));
   }
 
   stop(): void {
