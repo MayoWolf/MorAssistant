@@ -250,7 +250,7 @@ export class CodexWorker {
       cwd: join(this.codexHome, "workspace"),
       serviceName: "morassistant-onshape-cad-agent",
       approvalPolicy: "never",
-      sandbox: "readOnly",
+      sandbox: "read-only",
       ephemeral: true,
       baseInstructions: [
         "You are a conservative CAD planning component.",

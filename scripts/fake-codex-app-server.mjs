@@ -88,6 +88,9 @@ lines.on("line", (line) => {
         break;
       }
       case "thread/start": {
+        if (request.params?.sandbox !== "read-only") {
+          throw new Error("thread/start must use the Codex SandboxMode spelling read-only");
+        }
         const id = `thread-${++threadCounter}`;
         send({ id: request.id, result: { thread: { id } } });
         break;
