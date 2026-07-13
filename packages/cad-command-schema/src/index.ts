@@ -144,7 +144,7 @@ export const CAD_PLAN_JSON_SCHEMA = {
       }
     },
     warnings: { type: "array", maxItems: 10, items: { type: "string", maxLength: 500 } },
-    requiresApproval: { const: true }
+    requiresApproval: { type: "boolean", const: true }
   }
 } as const;
 

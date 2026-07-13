@@ -46,6 +46,7 @@ describe("CAD plan validation", () => {
 
   it("normalizes the Structured Outputs wire shape without unsupported unions", () => {
     expect(JSON.stringify(CAD_PLAN_JSON_SCHEMA)).not.toContain("oneOf");
+    expect(CAD_PLAN_JSON_SCHEMA.properties.requiresApproval).toEqual({ type: "boolean", const: true });
     const wirePlan = {
       summary: "Rename the base sketch",
       risk: "low",
