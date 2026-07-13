@@ -65,6 +65,7 @@ export APP_ORIGIN=${MORASSISTANT_PANEL_ORIGIN:-https://morassistant-onshape.netl
 export ONSHAPE_REDIRECT_URI="https://${funnel_host}/oauth/onshape/callback"
 export SESSION_SECRET=$(keychain_ensure_random com.morassistant.session-secret hex)
 export SESSION_ENCRYPTION_KEY=$(keychain_ensure_random com.morassistant.session-encryption-key base64)
+export INSTALLATION_TOKEN=$(keychain_ensure_random com.morassistant.installation-token hex)
 export ONSHAPE_CLIENT_ID=${ONSHAPE_CLIENT_ID:-$(keychain_read com.morassistant.onshape-client-id || true)}
 export ONSHAPE_CLIENT_SECRET=${ONSHAPE_CLIENT_SECRET:-$(keychain_read com.morassistant.onshape-client-secret || true)}
 

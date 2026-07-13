@@ -102,6 +102,8 @@ The panel can instead be hosted on Netlify while the API runs on a separate pers
 
 The zero-cost personal procedure is documented in [Personal deployment with Tailscale Funnel](docs/personal-tailscale-deployment.md). A generic managed-container procedure remains in [Persistent backend deployment](docs/backend-deployment.md).
 
+Personal deployments use a private installation token stored in macOS Keychain. The Onshape OAuth URL carries it as a query value, while the extension carries it in a URL fragment that is removed into session storage before API calls. This binds the private iframe and durable Codex session without depending on third-party cookies; it is not the authentication design for a public multi-user release.
+
 ## Codex authentication and model selection
 
 `Continue with ChatGPT` starts Codex app-server's `chatgptDeviceCode` login. The server creates a separate directory under `CODEX_USERS_ROOT` for each application session and starts one app-server process with that directory as `CODEX_HOME`. In production, both that root and `SESSION_DB_PATH` live on the same persistent private volume. Session payloads—including Onshape OAuth tokens and CAD plans—are encrypted with AES-256-GCM before SQLite writes them.

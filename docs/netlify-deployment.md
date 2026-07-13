@@ -48,6 +48,8 @@ CODEX_USERS_ROOT=/data/codex-users
 
 For the single-user zero-cost deployment, run the backend through Tailscale Funnel as described in [Personal deployment with Tailscale Funnel](personal-tailscale-deployment.md), then use that printed HTTPS origin for `VITE_API_ORIGIN`.
 
+The personal deployment also sets `INSTALLATION_TOKEN` only on the backend. Never put it in a `VITE_` environment variable. Add it to the private Onshape OAuth URL and to the extension action URL fragment as documented in the personal deployment guide; the fragment is consumed in the browser and is not sent to Netlify.
+
 For a managed container host, mount a persistent private volume at `/data`. Add `SESSION_SECRET`, the separate `SESSION_ENCRYPTION_KEY`, and the remaining secrets from `.env.example` through the container host's secret manager. Never add them to Netlify's frontend build environment because `VITE_` values are public in the browser bundle.
 
 ## Onshape application URLs

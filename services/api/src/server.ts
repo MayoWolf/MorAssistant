@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,6 +38,7 @@ const envSchema = z.object({
   SESSION_SECRET: z.string().min(32).optional(),
   SESSION_ENCRYPTION_KEY: z.string().min(32).optional(),
   SESSION_DB_PATH: z.string().min(1).default(":memory:"),
+  INSTALLATION_TOKEN: z.string().min(32).optional(),
   ONSHAPE_CLIENT_ID: z.string().min(1).optional(),
   ONSHAPE_CLIENT_SECRET: z.string().min(1).optional(),
   ONSHAPE_REDIRECT_URI: z.string().url().optional(),
@@ -98,7 +99,7 @@ function saveSession(session: UserSession): void {
   sessionStore.save(session);
 }
 
-function getSession(request: FastifyRequest, reply: FastifyReply): UserSession {
+function getCookieSession(request: FastifyRequest, reply: FastifyReply): UserSession {
   const signedCookie = request.cookies.mor_session;
   const unsignedCookie = signedCookie ? request.unsignCookie(signedCookie) : undefined;
   let id = unsignedCookie?.valid ? unsignedCookie.value : undefined;
@@ -125,6 +126,52 @@ function getSession(request: FastifyRequest, reply: FastifyReply): UserSession {
       maxAge: 60 * 60 * 24 * 30,
       signed: true
     });
+  }
+  return session;
+}
+
+const ownerSessionId = env.INSTALLATION_TOKEN
+  ? `owner-${createHash("sha256").update(`morassistant:${env.INSTALLATION_TOKEN}`).digest("hex")}`
+  : undefined;
+
+function ownerSession(): UserSession {
+  if (!ownerSessionId) throw new Error("Personal installation mode is not configured.");
+  let session = sessions.get(ownerSessionId) ?? sessionStore.get(ownerSessionId);
+  if (!session) session = sessionStore.create(ownerSessionId);
+  else if (Date.now() - session.lastTouchedAt >= 60 * 60 * 1_000) saveSession(session);
+  sessions.set(ownerSessionId, session);
+  return session;
+}
+
+function validInstallationToken(value: unknown): boolean {
+  if (!env.INSTALLATION_TOKEN || typeof value !== "string") return false;
+  const expected = Buffer.from(env.INSTALLATION_TOKEN, "utf8");
+  const received = Buffer.from(value, "utf8");
+  return expected.length === received.length && timingSafeEqual(expected, received);
+}
+
+function getSession(request: FastifyRequest, reply: FastifyReply): UserSession {
+  if (!env.INSTALLATION_TOKEN) return getCookieSession(request, reply);
+  const token = request.headers["x-mor-installation"];
+  if (Array.isArray(token) || !validInstallationToken(token)) {
+    throw new HttpError(401, "This panel is not linked to the personal MorAssistant installation.");
+  }
+  return ownerSession();
+}
+
+function getOAuthStartSession(request: FastifyRequest, reply: FastifyReply, installationToken?: string): UserSession {
+  if (!env.INSTALLATION_TOKEN) return getCookieSession(request, reply);
+  if (!validInstallationToken(installationToken)) {
+    throw new HttpError(401, "Invalid personal installation link.");
+  }
+  return ownerSession();
+}
+
+function getOAuthCallbackSession(request: FastifyRequest, reply: FastifyReply, state: string): UserSession {
+  if (!env.INSTALLATION_TOKEN) return getCookieSession(request, reply);
+  const session = ownerSession();
+  if (!session.onshapeState || session.onshapeState !== state) {
+    throw new HttpError(400, "Invalid or expired Onshape OAuth state.");
   }
   return session;
 }
@@ -310,12 +357,13 @@ app.get("/api/status", async (request, reply) => {
 });
 
 app.get("/oauth/onshape/start", async (request, reply) => {
-  const session = getSession(request, reply);
-  const oauthConfig = onshapeOAuthConfig();
   const query = z.object({
     redirectOnshapeUri: z.string().url().max(2_048).optional(),
-    companyId: z.string().min(1).max(200).optional()
+    companyId: z.string().min(1).max(200).optional(),
+    installationToken: z.string().min(32).max(512).optional()
   }).passthrough().parse(request.query);
+  const session = getOAuthStartSession(request, reply, query.installationToken);
+  const oauthConfig = onshapeOAuthConfig();
   delete session.onshapeRedirectUri;
   if (query.redirectOnshapeUri) {
     const redirect = new URL(query.redirectOnshapeUri);
@@ -334,12 +382,12 @@ app.get("/oauth/onshape/start", async (request, reply) => {
 });
 
 app.get("/oauth/onshape/callback", async (request, reply) => {
-  const session = getSession(request, reply);
   const query = z.object({
     code: z.string().min(1).optional(),
     state: z.string().min(1),
     error: z.string().min(1).optional()
   }).passthrough().parse(request.query);
+  const session = getOAuthCallbackSession(request, reply, query.state);
   if (!session.onshapeState || query.state !== session.onshapeState) {
     throw new HttpError(400, "Invalid or expired Onshape OAuth state.");
   }

@@ -7,6 +7,7 @@ const appPort = 34_000 + seed * 2;
 const onshapePort = appPort + 1;
 const appOrigin = `http://127.0.0.1:${appPort}`;
 const onshapeOrigin = `http://127.0.0.1:${onshapePort}`;
+const installationToken = "mock-personal-installation-token-with-at-least-32-characters";
 let pipeline: ChildProcessWithoutNullStreams;
 let cookie = "";
 
@@ -33,14 +34,14 @@ async function waitUntilReady(child: ChildProcessWithoutNullStreams): Promise<vo
 }
 
 function sessionHeaders(extra: Record<string, string> = {}): Record<string, string> {
-  return { ...(cookie ? { cookie } : {}), ...extra };
+  return { "x-mor-installation": installationToken, ...(cookie ? { cookie } : {}), ...extra };
 }
 
 async function grantOnshapeAccess(): Promise<void> {
-  const start = await fetch(`${appOrigin}/oauth/onshape/start?companyId=beta-company`, { redirect: "manual" });
+  const start = await fetch(`${appOrigin}/oauth/onshape/start?companyId=beta-company&installationToken=${installationToken}`, { redirect: "manual" });
   expect(start.status).toBe(302);
   cookie = start.headers.get("set-cookie")?.split(";", 1)[0] ?? "";
-  expect(cookie).toContain("mor_session=");
+  expect(cookie).toBe("");
   const authorizationLocation = start.headers.get("location")!;
   expect(new URL(authorizationLocation).searchParams.get("company_id")).toBe("beta-company");
   const authorize = await fetch(authorizationLocation, { redirect: "manual" });
@@ -65,7 +66,8 @@ beforeAll(async () => {
     env: {
       ...process.env,
       MOR_MOCK_APP_PORT: String(appPort),
-      MOR_MOCK_ONSHAPE_PORT: String(onshapePort)
+      MOR_MOCK_ONSHAPE_PORT: String(onshapePort),
+      MOR_MOCK_INSTALLATION_TOKEN: installationToken
     },
     stdio: ["pipe", "pipe", "pipe"]
   });
@@ -94,12 +96,23 @@ describe("installed Onshape extension pipeline", () => {
     expect(invalidCallback.status).toBe(400);
     expect(invalidCallback.headers.get("cache-control")).toBe("no-store");
 
-    const deniedStart = await fetch(`${appOrigin}/oauth/onshape/start`, { redirect: "manual" });
-    const deniedCookie = deniedStart.headers.get("set-cookie")?.split(";", 1)[0] ?? "";
-    const deniedState = new URL(deniedStart.headers.get("location")!).searchParams.get("state");
-    const deniedCallback = await fetch(`${appOrigin}/oauth/onshape/callback?error=access_denied&state=${deniedState}`, {
-      headers: { cookie: deniedCookie }
+    const missingInstallation = await fetch(`${appOrigin}/api/status`);
+    expect(missingInstallation.status).toBe(401);
+
+    const installationPreflight = await fetch(`${appOrigin}/api/status`, {
+      method: "OPTIONS",
+      headers: {
+        origin: appOrigin,
+        "access-control-request-method": "GET",
+        "access-control-request-headers": "x-mor-installation"
+      }
     });
+    expect(installationPreflight.status).toBe(204);
+    expect(installationPreflight.headers.get("access-control-allow-headers")).toContain("x-mor-installation");
+
+    const deniedStart = await fetch(`${appOrigin}/oauth/onshape/start?installationToken=${installationToken}`, { redirect: "manual" });
+    const deniedState = new URL(deniedStart.headers.get("location")!).searchParams.get("state");
+    const deniedCallback = await fetch(`${appOrigin}/oauth/onshape/callback?error=access_denied&state=${deniedState}`);
     expect(deniedCallback.status).toBe(400);
     expect(await deniedCallback.text()).toContain("access was not granted");
   });

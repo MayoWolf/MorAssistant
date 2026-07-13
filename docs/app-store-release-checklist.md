@@ -14,6 +14,8 @@ HOST=0.0.0.0
 PORT=3000
 APP_ORIGIN=https://morassistant-onshape.netlify.app
 SESSION_SECRET=<at least 32 random characters>
+SESSION_ENCRYPTION_KEY=<separate high-entropy secret>
+INSTALLATION_TOKEN=<private token for a personal deployment>
 ONSHAPE_CLIENT_ID=<Developer Portal key>
 ONSHAPE_CLIENT_SECRET=<Developer Portal secret>
 ONSHAPE_REDIRECT_URI=https://api.your-domain.example/oauth/onshape/callback
@@ -25,7 +27,7 @@ CODEX_COMMAND=codex
 CODEX_USERS_ROOT=<encrypted persistent volume path>
 ```
 
-Before a public launch, replace the in-memory session map with an encrypted persistent store tied to the Onshape user, implement Codex worker idle cleanup and per-user quotas, and define deletion/retention policies for OAuth tokens, plans, and Codex credential directories. A process restart currently requires users to grant/connect again, so the current implementation is suitable for local testing and a controlled private beta—not a public production release yet.
+The encrypted SQLite store and Codex credential directories survive restarts. Before a public multi-user launch, replace the private installation-token binding with verified Onshape user identity, add capacity-aware scaling and quotas, and publish deletion/retention policies for OAuth tokens, plans, and Codex credential directories. The checked-in installation-token mode is deliberately limited to a controlled private deployment.
 
 Also prepare:
 
@@ -49,6 +51,8 @@ For an individual developer, open the [Onshape Developer Portal](https://cad.ons
 
 The OAuth URL is the Onshape installation grant. The panel intentionally does not show an extra “Connect Onshape” button. **Continue with ChatGPT** is a separate Codex sign-in inside the installed panel.
 
+For a private single-user deployment, append `?installationToken=YOUR_TOKEN` to the OAuth URL. The backend validates it with a timing-safe comparison and maps the OAuth callback to the same owner session used by the panel.
+
 ## 3. Add the right-panel extension
 
 Open the new OAuth application's **Extensions** tab, select **Add extension**, and enter:
@@ -61,6 +65,8 @@ Open the new OAuth application's **Extensions** tab, select **Add extension**, a
 ```text
 https://morassistant-onshape.netlify.app/?documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}
 ```
+
+For a private single-user deployment, append `#installationToken=YOUR_TOKEN`. The panel moves it into session storage and removes it from the visible URL before making API requests. Do not use a shared installation token for a public multi-user release.
 
 - Icon: `assets/morassistant-onshape-icon.svg` or a PNG exported to the dimensions requested by the portal
 
@@ -105,7 +111,7 @@ Expected result: all workspace typechecks/builds succeed, the production depende
 
 For a manual deterministic UI pass, run `npm run mock:pipeline`, visit the printed app origin's `/oauth/onshape/start`, and then open the panel URL described in the README. Confirm the narrow panel completes sign-in, preview, approval, and success with no browser console errors.
 
-Onshape's OAuth guidance currently requires third-party cookies for embedded apps. Include that browser prerequisite in beta onboarding and support troubleshooting.
+The private installation token binds the iframe to the owner session without third-party cookies. A public multi-user release must replace that private token with a per-user identity and OAuth handoff design.
 
 ## 6. Test the private installation in real Onshape
 

@@ -4,6 +4,31 @@ import type { ConnectionStatus, DeviceCodeLogin, PartStudioContext } from "@mora
 
 const emptyStatus: ConnectionStatus = { onshape: "disconnected", codex: "disconnected" };
 const apiOrigin = (import.meta.env.VITE_API_ORIGIN ?? "").replace(/\/$/, "");
+const installationStorageKey = "morassistant.installation-token";
+
+function installationTokenFromLaunch(): string | null {
+  const hash = new URLSearchParams(location.hash.replace(/^#/, ""));
+  const launchedToken = hash.get("installationToken");
+  if (launchedToken) {
+    try {
+      sessionStorage.setItem(installationStorageKey, launchedToken);
+    } catch {
+      // The in-memory value below still supports the current iframe when a
+      // browser blocks embedded storage entirely.
+    }
+    hash.delete("installationToken");
+    const remainingHash = hash.toString();
+    history.replaceState(null, "", `${location.pathname}${location.search}${remainingHash ? `#${remainingHash}` : ""}`);
+    return launchedToken;
+  }
+  try {
+    return sessionStorage.getItem(installationStorageKey);
+  } catch {
+    return null;
+  }
+}
+
+const installationToken = installationTokenFromLaunch();
 
 function contextFromUrl(): PartStudioContext | null {
   const params = new URLSearchParams(location.search);
@@ -26,7 +51,11 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${apiOrigin}${path}`, {
     ...init,
     credentials: "include",
-    headers: { ...(init?.body ? { "content-type": "application/json" } : {}), ...init?.headers }
+    headers: {
+      ...(init?.body ? { "content-type": "application/json" } : {}),
+      ...(installationToken ? { "x-mor-installation": installationToken } : {}),
+      ...init?.headers
+    }
   });
   const body = await response.json().catch(() => ({ error: `Request failed (${response.status}).` })) as T & { error?: string };
   if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status}).`);

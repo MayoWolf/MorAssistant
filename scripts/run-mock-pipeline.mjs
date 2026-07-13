@@ -103,6 +103,7 @@ const api = spawn(process.execPath, [resolve(root, "services/api/dist/server.js"
     PORT: String(appPort),
     APP_ORIGIN: appOrigin,
     SESSION_SECRET: "mock-session-secret-with-at-least-thirty-two-characters",
+    INSTALLATION_TOKEN: process.env.MOR_MOCK_INSTALLATION_TOKEN,
     ONSHAPE_CLIENT_ID: "mock-client",
     ONSHAPE_CLIENT_SECRET: "mock-secret",
     ONSHAPE_REDIRECT_URI: `${appOrigin}/oauth/onshape/callback`,
