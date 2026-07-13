@@ -2,6 +2,8 @@
 
 Netlify hosts MorAssistant's static Onshape right-panel UI and provides its public HTTPS origin. The Fastify API and Codex workers must run on a separate persistent container service.
 
+Current panel origin: `https://morassistant-onshape.netlify.app`
+
 ## Architecture
 
 ```text
@@ -38,7 +40,7 @@ Deploy the repository's API service to a container host with an encrypted databa
 
 ```text
 NODE_ENV=production
-APP_ORIGIN=https://your-netlify-site.netlify.app
+APP_ORIGIN=https://morassistant-onshape.netlify.app
 ONSHAPE_REDIRECT_URI=https://api.your-domain.example/oauth/onshape/callback
 CODEX_USERS_ROOT=/persistent/codex-users
 ```
@@ -55,7 +57,7 @@ OAuth callback:
 https://api.your-domain.example/oauth/onshape/callback
 
 Extension action URL:
-https://your-netlify-site.netlify.app/?documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}
+https://morassistant-onshape.netlify.app/?documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}
 ```
 
 After both origins are available, run the live private-installation matrix in [the App Store release checklist](app-store-release-checklist.md).

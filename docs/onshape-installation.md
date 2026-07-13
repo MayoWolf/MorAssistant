@@ -19,7 +19,7 @@ Configure:
 - Action URL:
 
 ```text
-https://your-panel.example/?documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}
+https://morassistant-onshape.netlify.app/?documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}
 ```
 
 The extension receives `server`, `userId`, `clientId`, locale, and company information as Onshape-provided query parameters in addition to the parameterized values above.

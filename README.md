@@ -1,5 +1,7 @@
 # MorAssistant
 
+[![Netlify Status](https://api.netlify.com/api/v1/badges/4ef420f0-7183-4032-82c2-a5ff089fef5b/deploy-status)](https://app.netlify.com/projects/morassistant-onshape/deploys)
+
 MorAssistant is an installable, approval-first Onshape right-panel copilot. Its product shape is similar to Adam: users add it through Onshape, launch it inside a Part Studio, describe an edit, review the proposed operations, and apply them without leaving CAD.
 
 It is **not a standalone end-user application**. The hosted React page, API, Codex workers, and MCP adapter are backend components of the Onshape extension. The only AI connection presented inside the installed panel is **Continue with ChatGPT**, which authorizes that user through Codex OAuth without asking for an OpenAI API key.
@@ -48,6 +50,8 @@ The API executes approved plans directly through the same typed Onshape client u
 See [Onshape installation configuration](docs/onshape-installation.md) for the exact Developer Portal URLs and extension settings. The [App Store release and test checklist](docs/app-store-release-checklist.md) covers private beta, QA, and public submission.
 
 MorAssistant is free and open-source software under the [Apache License 2.0](LICENSE). It is an independent project and is not affiliated with, endorsed by, or sponsored by Onshape, PTC, or OpenAI.
+
+The public panel origin is [morassistant-onshape.netlify.app](https://morassistant-onshape.netlify.app). The frontend is deployed; a persistent API/Codex container must be connected before this origin can complete Onshape OAuth or planning.
 
 ## Local setup
 

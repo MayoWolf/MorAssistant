@@ -9,3 +9,6 @@ data/*
 *.log
 *.tsbuildinfo
 .DS_Store
+
+# Local Netlify folder
+.netlify

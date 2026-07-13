@@ -12,7 +12,7 @@ Set these production values in the host's secret manager:
 NODE_ENV=production
 HOST=0.0.0.0
 PORT=3000
-APP_ORIGIN=https://your-panel.netlify.app
+APP_ORIGIN=https://morassistant-onshape.netlify.app
 SESSION_SECRET=<at least 32 random characters>
 ONSHAPE_CLIENT_ID=<Developer Portal key>
 ONSHAPE_CLIENT_SECRET=<Developer Portal secret>
@@ -59,7 +59,7 @@ Open the new OAuth application's **Extensions** tab, select **Add extension**, a
 - Action URL:
 
 ```text
-https://your-panel.netlify.app/?documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}
+https://morassistant-onshape.netlify.app/?documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}
 ```
 
 - Icon: `assets/morassistant-onshape-icon.svg` or a PNG exported to the dimensions requested by the portal
