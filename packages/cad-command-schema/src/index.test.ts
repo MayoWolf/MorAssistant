@@ -3,6 +3,7 @@ import {
   CAD_PLAN_JSON_SCHEMA,
   cadPlanSchema,
   normalizeCadPlanOutput,
+  parseFeatureJson,
   validatePlanAgainstFeatureTree
 } from "./index.js";
 
@@ -66,6 +67,9 @@ describe("CAD plan validation", () => {
         heightMm: null,
         centerXmm: null,
         centerYmm: null,
+        currentFeatureHash: null,
+        featureType: null,
+        featureJson: null,
         reason: "Clarifies design intent"
       }],
       warnings: [],
@@ -103,5 +107,87 @@ describe("CAD plan validation", () => {
     expect(validatePlanAgainstFeatureTree(parsed, [])).toBe(parsed);
     expect(() => validatePlanAgainstFeatureTree(parsed, [{ featureId: "f2", name: "Square 1" }]))
       .toThrow("already exists");
+  });
+
+  it("accepts a bounded native feature payload with ordered feature references", () => {
+    const featureJson = JSON.stringify({
+      btType: "BTMFeature-134",
+      featureType: "extrude",
+      name: "Profile Extrude",
+      parameters: [{
+        btType: "BTMParameterQueryList-148",
+        parameterId: "entities",
+        queries: [{ btType: "BTMIndividualSketchRegionQuery-140", featureId: "@feature:Profile" }]
+      }]
+    });
+    expect(parseFeatureJson(featureJson)).toMatchObject({ featureType: "extrude", name: "Profile Extrude" });
+    const nativePlan = cadPlanSchema.parse(normalizeCadPlanOutput({
+      summary: "Extrude the profile",
+      risk: "medium",
+      operations: [{
+        type: "create_feature",
+        featureId: null,
+        currentName: null,
+        newName: null,
+        featureName: "Profile Extrude",
+        parameterId: null,
+        currentExpression: null,
+        newExpression: null,
+        sketchName: null,
+        plane: null,
+        widthMm: null,
+        heightMm: null,
+        centerXmm: null,
+        centerYmm: null,
+        currentFeatureHash: null,
+        featureType: "extrude",
+        featureJson,
+        reason: "Create the requested solid"
+      }],
+      warnings: [],
+      requiresApproval: true
+    }));
+    expect(validatePlanAgainstFeatureTree(nativePlan, [{ featureId: "s1", name: "Profile" }])).toBe(nativePlan);
+    expect(() => validatePlanAgainstFeatureTree(nativePlan, [])).toThrow("unavailable feature Profile");
+  });
+
+  it("requires high risk for deletion and an exact hash for whole-feature replacement", () => {
+    const deletion = {
+      summary: "Delete obsolete feature",
+      risk: "high",
+      operations: [{ type: "delete_feature", featureId: "f1", currentName: "Old feature", reason: "Explicitly requested" }],
+      warnings: [],
+      requiresApproval: true
+    } as const;
+    expect(cadPlanSchema.safeParse({ ...deletion, risk: "medium" }).success).toBe(false);
+    expect(validatePlanAgainstFeatureTree(cadPlanSchema.parse(deletion), [{ featureId: "f1", name: "Old feature" }]))
+      .toMatchObject({ risk: "high" });
+
+    const hash = "a".repeat(64);
+    const replacement = cadPlanSchema.parse({
+      summary: "Suppress a feature",
+      risk: "medium",
+      operations: [{
+        type: "replace_feature",
+        featureId: "f1",
+        currentName: "Feature 1",
+        currentFeatureHash: hash,
+        featureType: "extrude",
+        featureJson: JSON.stringify({
+          btType: "BTMFeature-134",
+          featureId: "f1",
+          featureType: "extrude",
+          name: "Feature 1",
+          parameters: []
+        }),
+        reason: "Update the complete native definition"
+      }],
+      warnings: [],
+      requiresApproval: true
+    });
+    expect(validatePlanAgainstFeatureTree(replacement, [{ featureId: "f1", name: "Feature 1", featureHash: hash }]))
+      .toBe(replacement);
+    expect(() => validatePlanAgainstFeatureTree(replacement, [{ featureId: "f1", name: "Feature 1", featureHash: "b".repeat(64) }]))
+      .toThrow("changed after the plan");
   });
 });

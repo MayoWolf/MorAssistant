@@ -19,6 +19,41 @@ function planFromInput(params) {
   const markerIndex = text.indexOf(marker);
   const snapshot = markerIndex >= 0 ? JSON.parse(text.slice(markerIndex + marker.length)) : [];
   const userRequest = markerIndex >= 0 ? text.slice(0, markerIndex) : text;
+  if (/extrude/i.test(userRequest)) {
+    const sketch = snapshot.find((item) => item?.featureType === "newSketch");
+    if (!sketch?.name) throw new Error("The fake planner needs a sketch to extrude.");
+    const featureName = `${sketch.name} Extrude`;
+    return {
+      summary: `Extrude ${sketch.name} by 15 mm as a new solid`,
+      risk: "medium",
+      operations: [{
+        type: "create_feature",
+        featureName,
+        featureType: "extrude",
+        featureJson: JSON.stringify({
+          btType: "BTMFeature-134",
+          featureType: "extrude",
+          name: featureName,
+          suppressed: false,
+          parameters: [
+            { btType: "BTMParameterEnum-145", value: "SOLID", enumName: "ExtendedToolBodyType", parameterId: "bodyType" },
+            { btType: "BTMParameterEnum-145", value: "NEW", enumName: "NewBodyOperationType", parameterId: "operationType" },
+            {
+              btType: "BTMParameterQueryList-148",
+              queries: [{ btType: "BTMIndividualSketchRegionQuery-140", featureId: `@feature:${sketch.name}` }],
+              parameterId: "entities"
+            },
+            { btType: "BTMParameterEnum-145", value: "BLIND", enumName: "BoundingType", parameterId: "endBound" },
+            { btType: "BTMParameterQuantity-147", expression: "15 mm", parameterId: "depth" }
+          ],
+          returnAfterSubfeatures: false
+        }),
+        reason: "Creates the requested solid from the sketch region"
+      }],
+      warnings: [],
+      requiresApproval: true
+    };
+  }
   if (/sketch|square|rectangle/i.test(userRequest)) {
     const sizes = /five|\b5\b/i.test(userRequest) ? [10, 20, 30, 40, 50] : [20];
     const centers = [-100, -65, -20, 35, 105];

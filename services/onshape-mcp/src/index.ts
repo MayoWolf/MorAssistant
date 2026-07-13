@@ -106,6 +106,71 @@ server.registerTool("create_rectangle_sketch", {
   return { content: [{ type: "text", text: message }] };
 });
 
+server.registerTool("create_feature", {
+  title: "Create a native Part Studio feature",
+  description: "Create any validated BTMFeature-134 or BTMSketch-151 payload.",
+  inputSchema: {
+    ...contextShape,
+    featureName: z.string().trim().min(1).max(100),
+    featureType: z.string().trim().min(1).max(200),
+    featureJson: z.string().min(2).max(100_000)
+  },
+  annotations: { readOnlyHint: false, destructiveHint: false }
+}, async ({ featureName, featureType, featureJson, ...context }) => {
+  const message = await client.applyOperation(context, {
+    type: "create_feature",
+    featureName,
+    featureType,
+    featureJson,
+    reason: "Approved MCP operation"
+  });
+  return { content: [{ type: "text", text: message }] };
+});
+
+server.registerTool("replace_feature", {
+  title: "Replace a native Part Studio feature",
+  description: "Replace one existing feature only if its exact snapshot hash still matches.",
+  inputSchema: {
+    ...contextShape,
+    featureId: z.string().min(1),
+    currentName: z.string().min(1),
+    currentFeatureHash: z.string().regex(/^[a-f0-9]{64}$/u),
+    featureType: z.string().trim().min(1).max(200),
+    featureJson: z.string().min(2).max(100_000)
+  },
+  annotations: { readOnlyHint: false, destructiveHint: true }
+}, async ({ featureId, currentName, currentFeatureHash, featureType, featureJson, ...context }) => {
+  const message = await client.applyOperation(context, {
+    type: "replace_feature",
+    featureId,
+    currentName,
+    currentFeatureHash,
+    featureType,
+    featureJson,
+    reason: "Approved MCP operation"
+  });
+  return { content: [{ type: "text", text: message }] };
+});
+
+server.registerTool("delete_feature", {
+  title: "Delete a Part Studio feature",
+  description: "Delete one feature only if its current name still matches.",
+  inputSchema: {
+    ...contextShape,
+    featureId: z.string().min(1),
+    currentName: z.string().min(1)
+  },
+  annotations: { readOnlyHint: false, destructiveHint: true }
+}, async ({ featureId, currentName, ...context }) => {
+  const message = await client.applyOperation(context, {
+    type: "delete_feature",
+    featureId,
+    currentName,
+    reason: "Approved MCP operation"
+  });
+  return { content: [{ type: "text", text: message }] };
+});
+
 server.registerTool("inspect_regeneration_errors", {
   title: "Inspect regeneration errors",
   description: "Read failed or warning feature states after an edit.",

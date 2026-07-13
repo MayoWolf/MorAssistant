@@ -94,10 +94,12 @@ const onshape = createServer(async (request, response) => {
     if (body.sourceMicroversion !== `m${microversion}` || body.rejectMicroversionSkew !== true) {
       return json(response, 409, { message: "missing or stale microversion guard" });
     }
-    if (body.feature?.btType !== "BTMSketch-151" || body.feature?.featureType !== "newSketch") {
-      return json(response, 400, { message: "invalid sketch fixture" });
+    const isSketch = body.feature?.btType === "BTMSketch-151" && body.feature?.featureType === "newSketch";
+    const isNativeFeature = body.feature?.btType === "BTMFeature-134" && typeof body.feature?.featureType === "string";
+    if (!isSketch && !isNativeFeature) {
+      return json(response, 400, { message: "invalid native feature fixture" });
     }
-    const sketch = { ...structuredClone(body.feature), featureId: `sketch-${++sketchCounter}` };
+    const sketch = { ...structuredClone(body.feature), featureId: `feature-${++sketchCounter}` };
     sketches.push(sketch);
     microversion += 1;
     return json(response, 200, {

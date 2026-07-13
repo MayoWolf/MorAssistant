@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildOnshapeAuthorizationUrl, buildRectangleSketchFeature, exchangeOnshapeCode, OnshapeClient } from "./index.js";
+import {
+  buildOnshapeAuthorizationUrl,
+  buildRectangleSketchFeature,
+  exchangeOnshapeCode,
+  featureFingerprint,
+  OnshapeClient
+} from "./index.js";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -137,5 +143,93 @@ describe("Onshape feature edits", () => {
       rejectMicroversionSkew: true,
       feature: { btType: "BTMSketch-151", name: "Square 1", featureType: "newSketch" }
     });
+  });
+
+  it("creates arbitrary native features and resolves feature-name references", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        serializationVersion: "1.2.20",
+        sourceMicroversion: "m8",
+        features: [{ featureId: "sketch-1", name: "Profile", featureType: "newSketch", parameters: [] }]
+      }), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ feature: { featureId: "extrude-1" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new OnshapeClient({ accessToken: () => "token" });
+    await client.applyOperation({ documentId: "d", workspaceId: "w", elementId: "e" }, {
+      type: "create_feature",
+      featureName: "Profile Extrude",
+      featureType: "extrude",
+      featureJson: JSON.stringify({
+        btType: "BTMFeature-134",
+        featureType: "extrude",
+        name: "Profile Extrude",
+        parameters: [{
+          btType: "BTMParameterQueryList-148",
+          parameterId: "entities",
+          queries: [{ btType: "BTMIndividualSketchRegionQuery-140", featureId: "@feature:Profile" }]
+        }]
+      }),
+      reason: "Create a solid"
+    });
+    const body = JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body));
+    expect(body.feature.parameters[0].queries[0].featureId).toBe("sketch-1");
+  });
+
+  it("guards whole-feature replacement with a fingerprint", async () => {
+    const original = {
+      btType: "BTMFeature-134",
+      featureId: "f1",
+      featureType: "extrude",
+      name: "Extrude 1",
+      suppressed: false,
+      parameters: []
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        serializationVersion: "1.2.20",
+        sourceMicroversion: "m9",
+        features: [original]
+      }), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ feature: { featureId: "f1" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new OnshapeClient({ accessToken: () => "token" });
+    await client.applyOperation({ documentId: "d", workspaceId: "w", elementId: "e" }, {
+      type: "replace_feature",
+      featureId: "f1",
+      currentName: "Extrude 1",
+      currentFeatureHash: featureFingerprint(original),
+      featureType: "extrude",
+      featureJson: JSON.stringify({ ...original, suppressed: true }),
+      reason: "Suppress the feature"
+    });
+    const body = JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body));
+    expect(body.feature).toMatchObject({ featureId: "f1", suppressed: true });
+  });
+
+  it("deletes only the exact previewed feature", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        features: [{ featureId: "f1", featureType: "fillet", name: "Fillet 1", parameters: [] }]
+      }), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new OnshapeClient({ accessToken: () => "token" });
+    await client.applyOperation({ documentId: "d", workspaceId: "w", elementId: "e" }, {
+      type: "delete_feature",
+      featureId: "f1",
+      currentName: "Fillet 1",
+      reason: "Explicitly requested"
+    });
+    expect(String(fetchMock.mock.calls[1]?.[0])).toMatch(/\/features\/featureid\/f1$/u);
+    expect((fetchMock.mock.calls[1]?.[1] as RequestInit).method).toBe("DELETE");
   });
 });

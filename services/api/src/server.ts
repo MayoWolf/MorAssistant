@@ -19,10 +19,12 @@ import { CodexWorkerPool } from "@morassistant/codex-worker";
 import {
   buildOnshapeAuthorizationUrl,
   exchangeOnshapeCode,
+  featureFingerprint,
   OnshapeClient,
   OnshapeApiError,
   refreshOnshapeTokens,
   type OnshapeOAuthConfig,
+  type OnshapeFeature,
   type OnshapeTokens
 } from "@morassistant/onshape-client";
 import type { PartStudioContext } from "@morassistant/shared-types";
@@ -108,6 +110,10 @@ function saveSession(session: UserSession): void {
   sessionStore.save(session);
 }
 
+function featuresWithHashes(features: OnshapeFeature[]): Array<OnshapeFeature & { featureHash: string }> {
+  return features.map((feature) => ({ ...feature, featureHash: featureFingerprint(feature) }));
+}
+
 const planRequestSchema = z.object({
   prompt: z.string().trim().min(3).max(4_000),
   context: z.unknown()
@@ -125,7 +131,7 @@ async function createStoredPlan(
   const client = clientFor(session, body.context);
   const featureTree = await client.listFeatures(body.context);
   const plan = cadPlanSchema.parse(await workers.forUser(session.id).createPlan(body.prompt, featureTree));
-  validatePlanAgainstFeatureTree(plan, featureTree.features);
+  validatePlanAgainstFeatureTree(plan, featuresWithHashes(featureTree.features));
   if (body.context.configuration && plan.operations.some((operation) => operation.type === "update_dimension")) {
     throw new HttpError(409, "Dimension edits in configured Part Studios are not supported yet. Rename operations remain available.");
   }
@@ -601,7 +607,7 @@ app.post("/api/plans/:id/apply", async (request, reply) => {
   saveSession(session);
   try {
     const currentTree = await client.listFeatures(plan.context);
-    validatePlanAgainstFeatureTree(plan, currentTree.features);
+    validatePlanAgainstFeatureTree(plan, featuresWithHashes(currentTree.features));
   } catch (error) {
     plan.status = "pending";
     saveSession(session);

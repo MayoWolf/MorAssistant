@@ -9,7 +9,7 @@ import {
   normalizeCadPlanOutput,
   type CadPlan
 } from "@morassistant/cad-command-schema";
-import type { FeatureListResponse } from "@morassistant/onshape-client";
+import { featureFingerprint, type FeatureListResponse } from "@morassistant/onshape-client";
 
 interface RpcResponse {
   id?: number;
@@ -243,13 +243,21 @@ export class CodexWorker {
     await this.start();
     if (await this.accountStatus() !== "connected") throw new Error("Connect ChatGPT before creating a plan.");
 
-    const featureSnapshot = features.features.map((feature) => ({
-      featureId: feature.featureId,
-      name: feature.name,
-      featureType: feature.featureType,
-      parameters: feature.parameters?.filter((parameter) => typeof parameter.expression === "string")
-        .map((parameter) => ({ parameterId: parameter.parameterId, expression: parameter.expression }))
-    }));
+    let featurePayloadBudget = 200_000;
+    const featureSnapshot = features.features.map((feature) => {
+      const serialized = JSON.stringify(feature);
+      const includePayload = serialized.length <= 60_000 && serialized.length <= featurePayloadBudget;
+      if (includePayload) featurePayloadBudget -= serialized.length;
+      return {
+        featureId: feature.featureId,
+        name: feature.name,
+        featureType: feature.featureType,
+        featureHash: featureFingerprint(feature),
+        ...(includePayload ? { featureJson: serialized } : {}),
+        parameters: feature.parameters?.filter((parameter) => typeof parameter.expression === "string")
+          .map((parameter) => ({ parameterId: parameter.parameterId, expression: parameter.expression }))
+      };
+    });
     const threadResponse = await this.request("thread/start", {
       ...(this.model ? { model: this.model } : {}),
       cwd: join(this.codexHome, "workspace"),
@@ -264,6 +272,12 @@ export class CodexWorker {
         "You may create new axis-aligned rectangle or square sketches with create_rectangle_sketch; it needs no existing feature ID and currently supports only the Top plane.",
         "For squares, widthMm and heightMm must be equal. When dimensions are omitted, choose clear deterministic sizes such as 10, 20, 30 mm and mention that choice in warnings.",
         "Give every new sketch a unique descriptive name. Separate multiple rectangles with centerXmm and centerYmm so they do not overlap.",
+        "For any other standard Part Studio feature, use create_feature with an exact native Onshape BTMFeature-134 or BTMSketch-151 object serialized as minified featureJson.",
+        "create_feature supports standard sketches, extrude, revolve, sweep, loft, fillet, chamfer, shell, hole, draft, rib, boolean, split, transform, patterns, mate connectors, and other valid Part Studio featureType payloads.",
+        "Use @feature:Exact Feature Name anywhere featureJson needs a featureId. Creation operations may reference features created earlier in the same ordered plan.",
+        "For a blind new-body extrude, use BTMFeature-134 featureType extrude with enum parameters bodyType=SOLID, operationType=NEW, a BTMParameterQueryList-148 entities query containing BTMIndividualSketchRegionQuery-140 whose featureId is @feature:Sketch Name, endBound=BLIND, and a BTMParameterQuantity-147 depth expression with units.",
+        "Use replace_feature with the exact featureHash from the snapshot to change a whole existing native feature, and preserve fields from featureJson that are not intentionally changed.",
+        "Use delete_feature only when explicitly requested. Any delete plan must be high risk. create_feature and replace_feature must be at least medium risk.",
         "Do not invent existing IDs or unsupported references. Every change requires explicit user approval.",
         "Prefer the smallest set of reversible edits. Flag uncertainty in warnings."
       ].join("\n")

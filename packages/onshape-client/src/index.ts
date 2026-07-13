@@ -1,4 +1,5 @@
-import type { CadOperation, RegenerationError } from "@morassistant/cad-command-schema";
+import { createHash } from "node:crypto";
+import { parseFeatureJson, type CadOperation, type RegenerationError } from "@morassistant/cad-command-schema";
 import type { PartStudioContext } from "@morassistant/shared-types";
 import { buildRectangleSketchFeature } from "./rectangle-sketch.js";
 
@@ -54,6 +55,24 @@ export interface FeatureListResponse {
 export interface FeatureUpdateConcurrency {
   serializationVersion?: string;
   sourceMicroversion?: string;
+}
+
+export function featureFingerprint(feature: Record<string, unknown>): string {
+  return createHash("sha256").update(JSON.stringify(feature)).digest("hex");
+}
+
+function resolveFeatureReferences(value: unknown, features: OnshapeFeature[]): unknown {
+  if (typeof value === "string" && value.startsWith("@feature:")) {
+    const name = value.slice("@feature:".length).trim();
+    const feature = features.find((candidate) => candidate.name?.toLocaleLowerCase() === name.toLocaleLowerCase());
+    if (!feature) throw new Error(`Referenced feature ${name} was not found.`);
+    return feature.featureId;
+  }
+  if (Array.isArray(value)) return value.map((item) => resolveFeatureReferences(item, features));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, resolveFeatureReferences(item, features)]));
+  }
+  return value;
 }
 
 export class OnshapeApiError extends Error {
@@ -217,6 +236,16 @@ export class OnshapeClient {
     );
   }
 
+  async deleteFeature(context: PartStudioContext, featureId: string): Promise<unknown> {
+    const query = new URLSearchParams();
+    if (context.configuration) query.set("configuration", context.configuration);
+    const suffix = query.size > 0 ? `?${query}` : "";
+    return this.request(
+      `/partstudios/d/${encodeURIComponent(context.documentId)}/w/${encodeURIComponent(context.workspaceId)}/e/${encodeURIComponent(context.elementId)}/features/featureid/${encodeURIComponent(featureId)}${suffix}`,
+      { method: "DELETE" }
+    );
+  }
+
   async applyOperation(context: PartStudioContext, operation: CadOperation): Promise<string> {
     const tree = await this.listFeatures(context);
     if (operation.type === "create_rectangle_sketch") {
@@ -233,8 +262,36 @@ export class OnshapeClient {
       return `Created ${operation.sketchName}: ${operation.widthMm} mm × ${operation.heightMm} mm on the Top plane.`;
     }
 
+    if (operation.type === "create_feature") {
+      if (tree.features.some((feature) => feature.name?.toLocaleLowerCase() === operation.featureName.toLocaleLowerCase())) {
+        throw new Error(`A feature named ${operation.featureName} already exists.`);
+      }
+      const feature = resolveFeatureReferences(parseFeatureJson(operation.featureJson), tree.features) as Record<string, unknown>;
+      await this.addFeature(context, feature, tree);
+      return `Created ${operation.featureName} (${operation.featureType}).`;
+    }
+
     const original = tree.features.find((feature) => feature.featureId === operation.featureId);
     if (!original) throw new Error(`Feature ${operation.featureId} was not found.`);
+
+    if (operation.type === "delete_feature") {
+      if (original.name !== operation.currentName) throw new Error(`Feature ${operation.featureId} has changed since preview.`);
+      await this.deleteFeature(context, operation.featureId);
+      return `Deleted ${operation.currentName}.`;
+    }
+
+    if (operation.type === "replace_feature") {
+      if (original.name !== operation.currentName || featureFingerprint(original) !== operation.currentFeatureHash) {
+        throw new Error(`Feature ${operation.featureId} has changed since preview.`);
+      }
+      const replacement = {
+        ...resolveFeatureReferences(parseFeatureJson(operation.featureJson), tree.features) as Record<string, unknown>,
+        featureId: operation.featureId
+      } as OnshapeFeature;
+      await this.updateFeature(context, replacement, tree);
+      return `Updated ${operation.currentName} as ${operation.featureType}.`;
+    }
+
     const feature = structuredClone(original);
 
     if (operation.type === "rename_feature") {

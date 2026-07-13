@@ -103,6 +103,36 @@ function SkeletonPlan() {
   </div>;
 }
 
+type PlanOperation = StoredCadPlan["operations"][number];
+
+function operationTitle(operation: PlanOperation): string {
+  switch (operation.type) {
+    case "rename_feature": return "Rename feature";
+    case "update_dimension": return "Update dimension";
+    case "create_rectangle_sketch": return "Create rectangle sketch";
+    case "create_feature": return "Create native feature";
+    case "replace_feature": return "Replace native feature";
+    case "delete_feature": return "Delete feature";
+  }
+}
+
+function OperationDetail({ operation }: { operation: PlanOperation }) {
+  switch (operation.type) {
+    case "rename_feature":
+      return <p><code>{operation.currentName}</code><i>→</i><code>{operation.newName}</code></p>;
+    case "update_dimension":
+      return <p><code>{operation.featureName}.{operation.parameterId}</code><i>→</i><code>{operation.newExpression}</code></p>;
+    case "create_rectangle_sketch":
+      return <p><code>{operation.sketchName}</code><i>·</i><code>{operation.widthMm} × {operation.heightMm} mm · {operation.plane}</code></p>;
+    case "create_feature":
+      return <p><code>{operation.featureName}</code><i>·</i><code>{operation.featureType}</code></p>;
+    case "replace_feature":
+      return <p><code>{operation.currentName}</code><i>→</i><code>{operation.featureType}</code></p>;
+    case "delete_feature":
+      return <p><code>{operation.currentName}</code><i>→</i><code>deleted</code></p>;
+  }
+}
+
 export function App() {
   const context = useMemo(contextFromUrl, []);
   const [status, setStatus] = useState<ConnectionStatus | null>(null);
@@ -260,16 +290,8 @@ export function App() {
         {plan.operations.map((operation, index) => <li key={`${operation.type}-${index}`}>
           <span className="op-index">{String(index + 1).padStart(2, "0")}</span>
           <div>
-            <strong>{operation.type === "rename_feature"
-              ? "Rename feature"
-              : operation.type === "update_dimension"
-                ? "Update dimension"
-                : "Create rectangle sketch"}</strong>
-            {operation.type === "rename_feature"
-              ? <p><code>{operation.currentName}</code><i>→</i><code>{operation.newName}</code></p>
-              : operation.type === "update_dimension"
-                ? <p><code>{operation.featureName}.{operation.parameterId}</code><i>→</i><code>{operation.newExpression}</code></p>
-                : <p><code>{operation.sketchName}</code><i>·</i><code>{operation.widthMm} × {operation.heightMm} mm · {operation.plane}</code></p>}
+            <strong>{operationTitle(operation)}</strong>
+            <OperationDetail operation={operation} />
             <small>{operation.reason}</small>
           </div>
           {plan.result?.operations[index] && <span className={`op-status ${plan.result.operations[index].status}`}>{plan.result.operations[index].status === "applied" ? "✓" : "!"}</span>}

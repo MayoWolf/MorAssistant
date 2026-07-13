@@ -282,6 +282,33 @@ describe("installed Onshape extension pipeline", () => {
     ]);
     expect(sketchState.sketches.every((sketch) => sketch.entities.length === 4)).toBe(true);
     expect(sketchState.microversion).toBe(9);
+
+    const extrudePlanResponse = await fetch(`${appOrigin}/api/plans`, {
+      method: "POST",
+      headers: sessionHeaders({ origin: appOrigin, "content-type": "application/json" }),
+      body: JSON.stringify({ prompt: "Extrude the first square 15 mm as a new solid", context })
+    });
+    expect(extrudePlanResponse.status).toBe(201);
+    const extrudePlan = await extrudePlanResponse.json() as {
+      id: string;
+      operations: Array<{ type: string; featureType?: string }>;
+    };
+    expect(extrudePlan.operations[0]).toMatchObject({ type: "create_feature", featureType: "extrude" });
+    const extrudeApply = await fetch(`${appOrigin}/api/plans/${extrudePlan.id}/apply`, {
+      method: "POST",
+      headers: sessionHeaders({ origin: appOrigin })
+    });
+    expect(extrudeApply.status).toBe(200);
+    expect(await extrudeApply.json()).toMatchObject({ status: "applied", result: { regenerationErrors: [] } });
+    const extrudeState = await fetch(`${onshapeOrigin}/__state`).then((response) => response.json()) as {
+      sketches: Array<{ featureType: string; name: string; parameters: Array<Record<string, unknown>> }>;
+      microversion: number;
+    };
+    const createdExtrude = extrudeState.sketches.find((item) => item.featureType === "extrude");
+    expect(createdExtrude).toMatchObject({ name: "Square 10 mm Extrude" });
+    expect(createdExtrude?.parameters.find((parameter) => parameter.parameterId === "depth"))
+      .toMatchObject({ expression: "15 mm" });
+    expect(extrudeState.microversion).toBe(10);
   }, 20_000);
 
   it("rejects version contexts and unexpected Onshape stacks", async () => {

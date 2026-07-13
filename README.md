@@ -63,6 +63,8 @@ Example prompts:
 ```text
 Create five sketches, all different-size squares on the Top plane
 Create a 25 mm × 40 mm rectangle sketch named Mounting Profile
+Extrude Mounting Profile 15 mm as a new body
+Add a 3 mm fillet to the outer edges of Base Extrusion
 Rename Sketch 1 to Base Profile
 Rename Extrude 1 to Base Extrusion
 Change Base Extrusion depth from 4 mm to 6 mm
@@ -76,6 +78,9 @@ The complete Developer Portal configuration and private-install test are in [doc
 |:--|:--:|:--|
 | Read the active Part Studio feature tree | ✅ | Workspace and Onshape-origin validation |
 | Create rectangle and square sketches on Top | ✅ | Typed millimeter geometry, unique names, captured v15 payload fixture |
+| Create any standard native Part Studio feature | ✅ Beta | Bounded BTM payload, ordered feature-name references, Onshape v15 validation |
+| Replace a complete existing feature | ✅ Beta | Exact SHA-256 snapshot match plus microversion guard |
+| Delete an existing feature | ✅ | Exact ID/name match, high-risk preview, explicit approval |
 | Rename existing features | ✅ | Exact feature ID and current-name match |
 | Update existing quantity expressions | ✅ | Exact parameter ID and current-expression match |
 | Inspect post-apply regeneration state | ✅ | Failed regeneration marks the plan failed |
@@ -83,9 +88,9 @@ The complete Developer Portal configuration and private-install test are in [doc
 | Survive backend restarts | ✅ | Encrypted SQLite sessions and persistent Codex credentials |
 | Edit versions | Refused | Versions are immutable; only `w` contexts are accepted |
 | Edit dimensions in custom configurations | Refused | Renames remain available; ambiguous configured edits fail closed |
-| Create circles, extrudes, holes, fillets, or patterns | Roadmap | Each builder needs its own captured, versioned Onshape payload fixture |
+| Assemblies, drawings, releases, and document administration | Roadmap | The current extension is intentionally scoped to the active Part Studio |
 
-The narrow scope is intentional. MorAssistant prefers a small set of well-validated edits over broad, opaque automation.
+Common operations use dedicated typed builders. Everything else in the active Part Studio can use the bounded native-feature fallback: Codex proposes the exact payload, the panel labels it as a native operation, the API validates its structure and references, and Onshape performs final v15 feature validation after approval.
 
 ## The trust boundary
 
@@ -187,7 +192,7 @@ npm audit --omit=dev
 - Codex device-code completion and event-race handling;
 - the current Codex app-server sandbox and structured-output protocol;
 - plan validation against a live feature snapshot;
-- approval-gated sketch creation, rename, and dimension mutations;
+- approval-gated typed and native feature creation, whole-feature replacement, deletion, rename, and dimension mutations;
 - regeneration inspection;
 - stale-plan, replay, and concurrent duplicate-apply rejection;
 - iframe, CORS, request-origin, workspace, configuration, and Onshape-stack guards.
