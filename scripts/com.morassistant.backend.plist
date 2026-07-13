@@ -7,15 +7,22 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/zsh</string>
-    <string>REPOSITORY_ROOT/scripts/local-deploy.sh</string>
+    <string>RUNTIME_REPOSITORY_ROOT/scripts/local-autostart.sh</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
   <key>WorkingDirectory</key>
-  <string>REPOSITORY_ROOT</string>
+  <string>RUNTIME_REPOSITORY_ROOT</string>
   <key>StandardOutPath</key>
-  <string>REPOSITORY_ROOT/data/backend.log</string>
+  <string>RUNTIME_REPOSITORY_ROOT/data/backend.log</string>
   <key>StandardErrorPath</key>
-  <string>REPOSITORY_ROOT/data/backend.error.log</string>
+  <string>RUNTIME_REPOSITORY_ROOT/data/backend.error.log</string>
 </dict>
 </plist>

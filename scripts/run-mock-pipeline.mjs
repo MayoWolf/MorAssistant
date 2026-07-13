@@ -59,7 +59,7 @@ const onshape = createServer(async (request, response) => {
   if (!request.headers.authorization?.startsWith("Bearer mock-")) {
     return json(response, 401, { message: "missing mock bearer token" });
   }
-  if (request.method === "GET" && /\/api\/v15\/partstudios\/d\/[^/]+\/w\/[^/]+\/e\/[^/]+\/features$/.test(url.pathname)) {
+  if (request.method === "GET" && /\/api\/v13\/partstudios\/d\/[^/]+\/w\/[^/]+\/e\/[^/]+\/features$/.test(url.pathname)) {
     return json(response, 200, {
       btType: "BTFeatureListResponse-2457",
       serializationVersion: "1.2.4",
@@ -68,7 +68,7 @@ const onshape = createServer(async (request, response) => {
       featureStates: { f1: { featureStatus: "OK" } }
     });
   }
-  if (request.method === "POST" && /\/api\/v15\/partstudios\/d\/[^/]+\/w\/[^/]+\/e\/[^/]+\/features\/featureid\/f1$/.test(url.pathname)) {
+  if (request.method === "POST" && /\/api\/v13\/partstudios\/d\/[^/]+\/w\/[^/]+\/e\/[^/]+\/features\/featureid\/f1$/.test(url.pathname)) {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -109,7 +109,7 @@ const api = spawn(process.execPath, [resolve(root, "services/api/dist/server.js"
     ONSHAPE_AUTHORIZATION_URL: `${onshapeOrigin}/oauth/authorize`,
     ONSHAPE_TOKEN_URL: `${onshapeOrigin}/oauth/token`,
     ONSHAPE_BASE_URL: onshapeOrigin,
-    ONSHAPE_API_VERSION: "v15",
+    ONSHAPE_API_VERSION: "v13",
     CODEX_COMMAND: resolve(root, "scripts/fake-codex-app-server.mjs"),
     CODEX_USERS_ROOT: codexHome
   },

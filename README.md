@@ -149,7 +149,7 @@ First visit `/oauth/onshape/start` on the printed app origin, then use the panel
 - Confirm OAuth grants and feature payloads on every Enterprise stack offered at launch. Runtime stack selection is restricted to the configured origin and HTTPS `*.onshape.com` origins.
 - Add capacity-aware horizontal scaling; the current single-volume service caps active Codex workers, terminates idle workers, and cleans up expired credential directories.
 - Store before/after feature payload hashes in an append-only audit log.
-- Capture real v15 fixture payloads from a dedicated Onshape test document before enabling feature creation.
+- Capture real v13 fixture payloads from a dedicated Onshape test document before enabling feature creation.
 - Run the documented live integration matrix against a disposable Onshape document; automated tests intentionally do not mutate external services.
 
 Useful primary references: [Codex app-server protocol](https://developers.openai.com/codex/app-server), [Onshape OAuth](https://onshape-public.github.io/docs/auth/oauth/), [Onshape extensions](https://onshape-public.github.io/docs/app-dev/extensions/), and [Onshape feature access](https://onshape-public.github.io/docs/api-adv/featureaccess/).

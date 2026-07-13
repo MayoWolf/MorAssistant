@@ -20,7 +20,7 @@ ONSHAPE_REDIRECT_URI=https://api.your-domain.example/oauth/onshape/callback
 ONSHAPE_AUTHORIZATION_URL=https://oauth.onshape.com/oauth/authorize
 ONSHAPE_TOKEN_URL=https://oauth.onshape.com/oauth/token
 ONSHAPE_BASE_URL=https://cad.onshape.com
-ONSHAPE_API_VERSION=v15
+ONSHAPE_API_VERSION=v13
 CODEX_COMMAND=codex
 CODEX_USERS_ROOT=<encrypted persistent volume path>
 ```

@@ -36,7 +36,7 @@ CODEX_IDLE_TIMEOUT_MS=900000
 ONSHAPE_BASE_URL=https://cad.onshape.com
 ONSHAPE_AUTHORIZATION_URL=https://oauth.onshape.com/oauth/authorize
 ONSHAPE_TOKEN_URL=https://oauth.onshape.com/oauth/token
-ONSHAPE_API_VERSION=v15
+ONSHAPE_API_VERSION=v13
 ```
 
 Deploy and generate the public HTTPS domain:

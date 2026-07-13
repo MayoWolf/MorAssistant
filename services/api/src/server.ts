@@ -44,7 +44,7 @@ const envSchema = z.object({
   ONSHAPE_AUTHORIZATION_URL: z.string().url().default("https://oauth.onshape.com/oauth/authorize"),
   ONSHAPE_TOKEN_URL: z.string().url().default("https://oauth.onshape.com/oauth/token"),
   ONSHAPE_BASE_URL: z.string().url().default("https://cad.onshape.com"),
-  ONSHAPE_API_VERSION: z.string().default("v15"),
+  ONSHAPE_API_VERSION: z.string().default("v13"),
   CODEX_MODEL: z.string().min(1).optional(),
   CODEX_COMMAND: z.string().default("codex"),
   CODEX_USERS_ROOT: z.string().default(resolve(repositoryRoot, "data/codex-users")),

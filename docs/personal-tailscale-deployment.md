@@ -37,15 +37,15 @@ The printed callback must exactly match the callback registered in Onshape. Set 
 
 ## Start at login
 
-Install the checked-in LaunchAgent template after replacing `REPOSITORY_ROOT` with this repository's absolute path. The launch agent runs the same idempotent deployment script when the user signs in.
+Install the login service with:
 
 ```bash
-mkdir -p ~/Library/LaunchAgents
-sed "s|REPOSITORY_ROOT|$PWD|g" scripts/com.morassistant.backend.plist > ~/Library/LaunchAgents/com.morassistant.backend.plist
-launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.morassistant.backend.plist
+npm run local:install-autostart
 ```
 
-Logs are written to `data/backend.log` and `data/backend.error.log` in the repository.
+The installer creates a dedicated runtime clone at `~/Library/Application Support/MorAssistant/repo`, installs a LaunchAgent, and starts it. Keeping the runtime outside Desktop and Documents avoids macOS protected-folder restrictions for background services. At login, it attempts a fast-forward update from `main`, then runs the same idempotent deployment script. If GitHub is unavailable, the last-known-good checkout still starts.
+
+Logs are written to `~/Library/Application Support/MorAssistant/repo/data/backend.log` and `backend.error.log`.
 
 ## Operations
 
