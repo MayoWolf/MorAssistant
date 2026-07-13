@@ -75,6 +75,21 @@ function resolveFeatureReferences(value: unknown, features: OnshapeFeature[]): u
   return value;
 }
 
+function canonicalizeFeaturePayload(feature: Record<string, unknown>): Record<string, unknown> {
+  const canonical = structuredClone(feature);
+  if (canonical.featureType === "extrude" && Array.isArray(canonical.parameters)) {
+    for (const parameter of canonical.parameters) {
+      if (parameter && typeof parameter === "object") {
+        const record = parameter as Record<string, unknown>;
+        if (record.parameterId === "bodyType" && record.btType === "BTMParameterEnum-145") {
+          record.enumName = "ExtendedToolBodyType";
+        }
+      }
+    }
+  }
+  return canonical;
+}
+
 export class OnshapeApiError extends Error {
   constructor(
     message: string,
@@ -266,7 +281,9 @@ export class OnshapeClient {
       if (tree.features.some((feature) => feature.name?.toLocaleLowerCase() === operation.featureName.toLocaleLowerCase())) {
         throw new Error(`A feature named ${operation.featureName} already exists.`);
       }
-      const feature = resolveFeatureReferences(parseFeatureJson(operation.featureJson), tree.features) as Record<string, unknown>;
+      const feature = canonicalizeFeaturePayload(
+        resolveFeatureReferences(parseFeatureJson(operation.featureJson), tree.features) as Record<string, unknown>
+      );
       await this.addFeature(context, feature, tree);
       return `Created ${operation.featureName} (${operation.featureType}).`;
     }
@@ -285,7 +302,9 @@ export class OnshapeClient {
         throw new Error(`Feature ${operation.featureId} has changed since preview.`);
       }
       const replacement = {
-        ...resolveFeatureReferences(parseFeatureJson(operation.featureJson), tree.features) as Record<string, unknown>,
+        ...canonicalizeFeaturePayload(
+          resolveFeatureReferences(parseFeatureJson(operation.featureJson), tree.features) as Record<string, unknown>
+        ),
         featureId: operation.featureId
       } as OnshapeFeature;
       await this.updateFeature(context, replacement, tree);

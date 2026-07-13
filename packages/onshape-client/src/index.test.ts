@@ -166,16 +166,27 @@ describe("Onshape feature edits", () => {
         btType: "BTMFeature-134",
         featureType: "extrude",
         name: "Profile Extrude",
-        parameters: [{
-          btType: "BTMParameterQueryList-148",
-          parameterId: "entities",
-          queries: [{ btType: "BTMIndividualSketchRegionQuery-140", featureId: "@feature:Profile" }]
-        }]
+        parameters: [
+          {
+            btType: "BTMParameterEnum-145",
+            parameterId: "bodyType",
+            enumName: "ToolBodyType",
+            value: "SOLID"
+          },
+          {
+            btType: "BTMParameterQueryList-148",
+            parameterId: "entities",
+            queries: [{ btType: "BTMIndividualSketchRegionQuery-140", featureId: "@feature:Profile" }]
+          }
+        ]
       }),
       reason: "Create a solid"
     });
     const body = JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body));
-    expect(body.feature.parameters[0].queries[0].featureId).toBe("sketch-1");
+    expect(body.feature.parameters.find((parameter: { parameterId: string }) => parameter.parameterId === "entities").queries[0].featureId)
+      .toBe("sketch-1");
+    expect(body.feature.parameters.find((parameter: { parameterId: string }) => parameter.parameterId === "bodyType").enumName)
+      .toBe("ExtendedToolBodyType");
   });
 
   it("guards whole-feature replacement with a fingerprint", async () => {
