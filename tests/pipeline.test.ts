@@ -244,6 +244,44 @@ describe("installed Onshape extension pipeline", () => {
     };
     expect(dimensionState.feature.parameters[0]).toMatchObject({ parameterId: "depth", expression: "6 mm" });
     expect(dimensionState.microversion).toBe(4);
+
+    const sketchPlanResponse = await fetch(`${appOrigin}/api/plans`, {
+      method: "POST",
+      headers: sessionHeaders({ origin: appOrigin, "content-type": "application/json" }),
+      body: JSON.stringify({ prompt: "Create five sketches, all of different size squares on the top plane.", context })
+    });
+    expect(sketchPlanResponse.status).toBe(201);
+    const sketchPlan = await sketchPlanResponse.json() as {
+      id: string;
+      operations: Array<{ type: string; widthMm?: number; heightMm?: number }>;
+    };
+    expect(sketchPlan.operations).toHaveLength(5);
+    expect(sketchPlan.operations.every((operation) =>
+      operation.type === "create_rectangle_sketch" && operation.widthMm === operation.heightMm
+    )).toBe(true);
+
+    const sketchApply = await fetch(`${appOrigin}/api/plans/${sketchPlan.id}/apply`, {
+      method: "POST",
+      headers: sessionHeaders({ origin: appOrigin })
+    });
+    expect(sketchApply.status).toBe(200);
+    expect(await sketchApply.json()).toMatchObject({
+      status: "applied",
+      result: { status: "applied", regenerationErrors: [], operations: new Array(5).fill({ status: "applied" }) }
+    });
+    const sketchState = await fetch(`${onshapeOrigin}/__state`).then((response) => response.json()) as {
+      sketches: Array<{ name: string; entities: unknown[] }>;
+      microversion: number;
+    };
+    expect(sketchState.sketches.map((sketch) => sketch.name)).toEqual([
+      "Square 10 mm",
+      "Square 20 mm",
+      "Square 30 mm",
+      "Square 40 mm",
+      "Square 50 mm"
+    ]);
+    expect(sketchState.sketches.every((sketch) => sketch.entities.length === 4)).toBe(true);
+    expect(sketchState.microversion).toBe(9);
   }, 20_000);
 
   it("rejects version contexts and unexpected Onshape stacks", async () => {

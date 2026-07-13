@@ -13,6 +13,8 @@ const root = resolve(import.meta.dirname, "..");
 const codexHome = await mkdtemp(`${tmpdir()}/morassistant-e2e-`);
 
 let microversion = 1;
+let sketchCounter = 0;
+const sketches = [];
 let feature = {
   btType: "BTMFeature-134",
   featureId: "f1",
@@ -54,7 +56,7 @@ const onshape = createServer(async (request, response) => {
     });
   }
   if (request.method === "GET" && url.pathname === "/__state") {
-    return json(response, 200, { feature, microversion });
+    return json(response, 200, { feature, sketches, microversion });
   }
   if (!request.headers.authorization?.startsWith("Bearer mock-")) {
     return json(response, 401, { message: "missing mock bearer token" });
@@ -64,8 +66,8 @@ const onshape = createServer(async (request, response) => {
       btType: "BTFeatureListResponse-2457",
       serializationVersion: "1.2.4",
       sourceMicroversion: `m${microversion}`,
-      features: [feature],
-      featureStates: { f1: { featureStatus: "OK" } }
+      features: [feature, ...sketches],
+      featureStates: Object.fromEntries([feature, ...sketches].map((item) => [item.featureId, { featureStatus: "OK" }]))
     });
   }
   if (request.method === "POST" && /\/api\/v13\/partstudios\/d\/[^/]+\/w\/[^/]+\/e\/[^/]+\/features\/featureid\/f1$/.test(url.pathname)) {
@@ -79,6 +81,27 @@ const onshape = createServer(async (request, response) => {
     microversion += 1;
     return json(response, 200, {
       feature,
+      featureState: { featureStatus: "OK", inactive: false },
+      serializationVersion: "1.2.4",
+      sourceMicroversion: `m${microversion}`,
+      microversionSkew: false
+    });
+  }
+  if (request.method === "POST" && /\/api\/v13\/partstudios\/d\/[^/]+\/w\/[^/]+\/e\/[^/]+\/features$/.test(url.pathname)) {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (body.sourceMicroversion !== `m${microversion}` || body.rejectMicroversionSkew !== true) {
+      return json(response, 409, { message: "missing or stale microversion guard" });
+    }
+    if (body.feature?.btType !== "BTMSketch-151" || body.feature?.featureType !== "newSketch") {
+      return json(response, 400, { message: "invalid sketch fixture" });
+    }
+    const sketch = { ...structuredClone(body.feature), featureId: `sketch-${++sketchCounter}` };
+    sketches.push(sketch);
+    microversion += 1;
+    return json(response, 200, {
+      feature: sketch,
       featureState: { featureStatus: "OK", inactive: false },
       serializationVersion: "1.2.4",
       sourceMicroversion: `m${microversion}`,

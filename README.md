@@ -61,6 +61,8 @@ For a private installation:
 Example prompts:
 
 ```text
+Create five sketches, all different-size squares on the Top plane
+Create a 25 mm × 40 mm rectangle sketch named Mounting Profile
 Rename Sketch 1 to Base Profile
 Rename Extrude 1 to Base Extrusion
 Change Base Extrusion depth from 4 mm to 6 mm
@@ -73,6 +75,7 @@ The complete Developer Portal configuration and private-install test are in [doc
 | Capability | Status | Guardrail |
 |:--|:--:|:--|
 | Read the active Part Studio feature tree | ✅ | Workspace and Onshape-origin validation |
+| Create rectangle and square sketches on Top | ✅ | Typed millimeter geometry, unique names, captured v15 payload fixture |
 | Rename existing features | ✅ | Exact feature ID and current-name match |
 | Update existing quantity expressions | ✅ | Exact parameter ID and current-expression match |
 | Inspect post-apply regeneration state | ✅ | Failed regeneration marks the plan failed |
@@ -80,7 +83,7 @@ The complete Developer Portal configuration and private-install test are in [doc
 | Survive backend restarts | ✅ | Encrypted SQLite sessions and persistent Codex credentials |
 | Edit versions | Refused | Versions are immutable; only `w` contexts are accepted |
 | Edit dimensions in custom configurations | Refused | Renames remain available; ambiguous configured edits fail closed |
-| Create sketches, extrudes, holes, fillets, or patterns | Roadmap | Requires captured, versioned Onshape payload fixtures first |
+| Create circles, extrudes, holes, fillets, or patterns | Roadmap | Each builder needs its own captured, versioned Onshape payload fixture |
 
 The narrow scope is intentional. MorAssistant prefers a small set of well-validated edits over broad, opaque automation.
 
@@ -184,7 +187,7 @@ npm audit --omit=dev
 - Codex device-code completion and event-race handling;
 - the current Codex app-server sandbox and structured-output protocol;
 - plan validation against a live feature snapshot;
-- approval-gated rename and dimension mutations;
+- approval-gated sketch creation, rename, and dimension mutations;
 - regeneration inspection;
 - stale-plan, replay, and concurrent duplicate-apply rejection;
 - iframe, CORS, request-origin, workspace, configuration, and Onshape-stack guards.

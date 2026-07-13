@@ -235,7 +235,7 @@ export function App() {
           value={prompt}
           onChange={(event) => updatePrompt(event.target.value)}
           onKeyDown={handlePromptKeyDown}
-          placeholder="Rename unclear features, or change a known dimension…"
+          placeholder="Create a square sketch, rename a feature, or change a dimension…"
           rows={5}
           disabled={!ready || busy !== null}
         />
@@ -260,10 +260,16 @@ export function App() {
         {plan.operations.map((operation, index) => <li key={`${operation.type}-${index}`}>
           <span className="op-index">{String(index + 1).padStart(2, "0")}</span>
           <div>
-            <strong>{operation.type === "rename_feature" ? "Rename feature" : "Update dimension"}</strong>
+            <strong>{operation.type === "rename_feature"
+              ? "Rename feature"
+              : operation.type === "update_dimension"
+                ? "Update dimension"
+                : "Create rectangle sketch"}</strong>
             {operation.type === "rename_feature"
               ? <p><code>{operation.currentName}</code><i>→</i><code>{operation.newName}</code></p>
-              : <p><code>{operation.featureName}.{operation.parameterId}</code><i>→</i><code>{operation.newExpression}</code></p>}
+              : operation.type === "update_dimension"
+                ? <p><code>{operation.featureName}.{operation.parameterId}</code><i>→</i><code>{operation.newExpression}</code></p>
+                : <p><code>{operation.sketchName}</code><i>·</i><code>{operation.widthMm} × {operation.heightMm} mm · {operation.plane}</code></p>}
             <small>{operation.reason}</small>
           </div>
           {plan.result?.operations[index] && <span className={`op-status ${plan.result.operations[index].status}`}>{plan.result.operations[index].status === "applied" ? "✓" : "!"}</span>}

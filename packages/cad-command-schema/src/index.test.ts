@@ -47,6 +47,7 @@ describe("CAD plan validation", () => {
   it("normalizes the Structured Outputs wire shape without unsupported unions", () => {
     expect(JSON.stringify(CAD_PLAN_JSON_SCHEMA)).not.toContain("oneOf");
     expect(CAD_PLAN_JSON_SCHEMA.properties.requiresApproval).toEqual({ type: "boolean", const: true });
+    expect(CAD_PLAN_JSON_SCHEMA.properties.operations.items.properties.type.enum).toContain("create_rectangle_sketch");
     const wirePlan = {
       summary: "Rename the base sketch",
       risk: "low",
@@ -59,11 +60,48 @@ describe("CAD plan validation", () => {
         parameterId: null,
         currentExpression: null,
         newExpression: null,
+        sketchName: null,
+        plane: null,
+        widthMm: null,
+        heightMm: null,
+        centerXmm: null,
+        centerYmm: null,
         reason: "Clarifies design intent"
       }],
       warnings: [],
       requiresApproval: true
     };
     expect(cadPlanSchema.parse(normalizeCadPlanOutput(wirePlan))).toEqual(plan);
+  });
+
+  it("normalizes and validates rectangle sketch creation", () => {
+    const wirePlan = {
+      summary: "Create two square sketches",
+      risk: "medium",
+      operations: [10, 20].map((size, index) => ({
+        type: "create_rectangle_sketch",
+        featureId: null,
+        currentName: null,
+        newName: null,
+        featureName: null,
+        parameterId: null,
+        currentExpression: null,
+        newExpression: null,
+        sketchName: `Square ${index + 1}`,
+        plane: "Top",
+        widthMm: size,
+        heightMm: size,
+        centerXmm: index * 30,
+        centerYmm: 0,
+        reason: "Create distinct square profiles"
+      })),
+      warnings: ["Sizes were selected because none were specified."],
+      requiresApproval: true
+    };
+    const parsed = cadPlanSchema.parse(normalizeCadPlanOutput(wirePlan));
+    expect(parsed.operations).toHaveLength(2);
+    expect(validatePlanAgainstFeatureTree(parsed, [])).toBe(parsed);
+    expect(() => validatePlanAgainstFeatureTree(parsed, [{ featureId: "f2", name: "Square 1" }]))
+      .toThrow("already exists");
   });
 });

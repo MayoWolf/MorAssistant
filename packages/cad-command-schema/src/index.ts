@@ -21,9 +21,21 @@ export const updateDimensionOperationSchema = z.object({
   reason: z.string().min(1).max(500)
 }).strict();
 
+export const createRectangleSketchOperationSchema = z.object({
+  type: z.literal("create_rectangle_sketch"),
+  sketchName: z.string().trim().min(1).max(100),
+  plane: z.literal("Top"),
+  widthMm: z.number().finite().min(0.1).max(10_000),
+  heightMm: z.number().finite().min(0.1).max(10_000),
+  centerXmm: z.number().finite().min(-100_000).max(100_000),
+  centerYmm: z.number().finite().min(-100_000).max(100_000),
+  reason: z.string().min(1).max(500)
+}).strict();
+
 export const cadOperationSchema = z.discriminatedUnion("type", [
   renameFeatureOperationSchema,
-  updateDimensionOperationSchema
+  updateDimensionOperationSchema,
+  createRectangleSketchOperationSchema
 ]);
 
 export const cadPlanSchema = z.object({
@@ -37,7 +49,9 @@ export const cadPlanSchema = z.object({
   for (const [index, operation] of plan.operations.entries()) {
     const target = operation.type === "rename_feature"
       ? `rename:${operation.featureId}`
-      : `dimension:${operation.featureId}:${operation.parameterId}`;
+      : operation.type === "update_dimension"
+        ? `dimension:${operation.featureId}:${operation.parameterId}`
+        : `new-sketch:${operation.sketchName.toLocaleLowerCase()}`;
     if (targets.has(target)) {
       context.addIssue({ code: "custom", path: ["operations", index], message: "A plan cannot modify the same target twice." });
     }
@@ -108,36 +122,79 @@ export const CAD_PLAN_JSON_SCHEMA = {
           "parameterId",
           "currentExpression",
           "newExpression",
+          "sketchName",
+          "plane",
+          "widthMm",
+          "heightMm",
+          "centerXmm",
+          "centerYmm",
           "reason"
         ],
         properties: {
-          type: { type: "string", enum: ["rename_feature", "update_dimension"] },
-          featureId: { type: "string", minLength: 1 },
+          type: { type: "string", enum: ["rename_feature", "update_dimension", "create_rectangle_sketch"] },
+          featureId: {
+            type: ["string", "null"],
+            description: "Existing feature ID for rename_feature or update_dimension; null for create_rectangle_sketch."
+          },
           currentName: {
             type: ["string", "null"],
-            description: "Current feature name for rename_feature; null for update_dimension."
+            description: "Current feature name for rename_feature; null for other operation types."
           },
           newName: {
             type: ["string", "null"],
             maxLength: 100,
-            description: "New feature name for rename_feature; null for update_dimension."
+            description: "New feature name for rename_feature; null for other operation types."
           },
           featureName: {
             type: ["string", "null"],
-            description: "Current feature name for update_dimension; null for rename_feature."
+            description: "Current feature name for update_dimension; null for other operation types."
           },
           parameterId: {
             type: ["string", "null"],
-            description: "Parameter ID for update_dimension; null for rename_feature."
+            description: "Parameter ID for update_dimension; null for other operation types."
           },
           currentExpression: {
             type: ["string", "null"],
-            description: "Current expression for update_dimension; null for rename_feature."
+            description: "Current expression for update_dimension; null for other operation types."
           },
           newExpression: {
             type: ["string", "null"],
             maxLength: 100,
-            description: "New expression for update_dimension; null for rename_feature."
+            description: "New expression for update_dimension; null for other operation types."
+          },
+          sketchName: {
+            type: ["string", "null"],
+            maxLength: 100,
+            description: "Unique new sketch name for create_rectangle_sketch; null for other operation types."
+          },
+          plane: {
+            type: ["string", "null"],
+            enum: ["Top", null],
+            description: "Top for create_rectangle_sketch; null for other operation types."
+          },
+          widthMm: {
+            type: ["number", "null"],
+            minimum: 0.1,
+            maximum: 10_000,
+            description: "Rectangle width in millimeters for create_rectangle_sketch; null otherwise."
+          },
+          heightMm: {
+            type: ["number", "null"],
+            minimum: 0.1,
+            maximum: 10_000,
+            description: "Rectangle height in millimeters for create_rectangle_sketch; null otherwise."
+          },
+          centerXmm: {
+            type: ["number", "null"],
+            minimum: -100_000,
+            maximum: 100_000,
+            description: "Rectangle center X in millimeters for create_rectangle_sketch; null otherwise."
+          },
+          centerYmm: {
+            type: ["number", "null"],
+            minimum: -100_000,
+            maximum: 100_000,
+            description: "Rectangle center Y in millimeters for create_rectangle_sketch; null otherwise."
           },
           reason: { type: "string", minLength: 1, maxLength: 500 }
         }
@@ -182,6 +239,18 @@ export function normalizeCadPlanOutput(input: unknown): unknown {
           reason: value.reason
         };
       }
+      if (value.type === "create_rectangle_sketch") {
+        return {
+          type: value.type,
+          sketchName: value.sketchName,
+          plane: value.plane,
+          widthMm: value.widthMm,
+          heightMm: value.heightMm,
+          centerXmm: value.centerXmm,
+          centerYmm: value.centerYmm,
+          reason: value.reason
+        };
+      }
       return operation;
     })
   };
@@ -192,8 +261,17 @@ export function validatePlanAgainstFeatureTree(
   features: Array<{ featureId: string; name?: string; parameters?: Array<Record<string, unknown>> }>
 ): CadPlan {
   const byId = new Map(features.map((feature) => [feature.featureId, feature]));
+  const names = new Set(features.flatMap((feature) => feature.name ? [feature.name.toLocaleLowerCase()] : []));
 
   for (const operation of plan.operations) {
+    if (operation.type === "create_rectangle_sketch") {
+      if (names.has(operation.sketchName.toLocaleLowerCase())) {
+        throw new Error(`A feature named ${operation.sketchName} already exists.`);
+      }
+      names.add(operation.sketchName.toLocaleLowerCase());
+      continue;
+    }
+
     const feature = byId.get(operation.featureId);
     if (!feature) throw new Error(`Feature ${operation.featureId} no longer exists.`);
 

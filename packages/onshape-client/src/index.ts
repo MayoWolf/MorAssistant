@@ -1,5 +1,8 @@
 import type { CadOperation, RegenerationError } from "@morassistant/cad-command-schema";
 import type { PartStudioContext } from "@morassistant/shared-types";
+import { buildRectangleSketchFeature } from "./rectangle-sketch.js";
+
+export { buildRectangleSketchFeature } from "./rectangle-sketch.js";
 
 export interface OnshapeOAuthConfig {
   clientId: string;
@@ -192,8 +195,44 @@ export class OnshapeClient {
     );
   }
 
+  async addFeature(
+    context: PartStudioContext,
+    feature: Record<string, unknown>,
+    concurrency: FeatureUpdateConcurrency = {}
+  ): Promise<unknown> {
+    return this.request(
+      `/partstudios/d/${encodeURIComponent(context.documentId)}/w/${encodeURIComponent(context.workspaceId)}/e/${encodeURIComponent(context.elementId)}/features`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          btType: "BTFeatureDefinitionCall-1406",
+          feature,
+          ...(concurrency.serializationVersion ? { serializationVersion: concurrency.serializationVersion } : {}),
+          ...(concurrency.sourceMicroversion ? {
+            sourceMicroversion: concurrency.sourceMicroversion,
+            rejectMicroversionSkew: true
+          } : {})
+        })
+      }
+    );
+  }
+
   async applyOperation(context: PartStudioContext, operation: CadOperation): Promise<string> {
     const tree = await this.listFeatures(context);
+    if (operation.type === "create_rectangle_sketch") {
+      if (tree.features.some((feature) => feature.name?.toLocaleLowerCase() === operation.sketchName.toLocaleLowerCase())) {
+        throw new Error(`A feature named ${operation.sketchName} already exists.`);
+      }
+      await this.addFeature(context, buildRectangleSketchFeature({
+        name: operation.sketchName,
+        widthMm: operation.widthMm,
+        heightMm: operation.heightMm,
+        centerXmm: operation.centerXmm,
+        centerYmm: operation.centerYmm
+      }), tree);
+      return `Created ${operation.sketchName}: ${operation.widthMm} mm × ${operation.heightMm} mm on the Top plane.`;
+    }
+
     const original = tree.features.find((feature) => feature.featureId === operation.featureId);
     if (!original) throw new Error(`Feature ${operation.featureId} was not found.`);
     const feature = structuredClone(original);

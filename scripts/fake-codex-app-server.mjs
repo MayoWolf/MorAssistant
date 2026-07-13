@@ -18,10 +18,30 @@ function planFromInput(params) {
   const marker = "Current Part Studio feature snapshot:\n";
   const markerIndex = text.indexOf(marker);
   const snapshot = markerIndex >= 0 ? JSON.parse(text.slice(markerIndex + marker.length)) : [];
+  const userRequest = markerIndex >= 0 ? text.slice(0, markerIndex) : text;
+  if (/sketch|square|rectangle/i.test(userRequest)) {
+    const sizes = /five|\b5\b/i.test(userRequest) ? [10, 20, 30, 40, 50] : [20];
+    const centers = [-100, -65, -20, 35, 105];
+    return {
+      summary: `Create ${sizes.length} square sketch${sizes.length === 1 ? "" : "es"} on the Top plane`,
+      risk: "medium",
+      operations: sizes.map((size, index) => ({
+        type: "create_rectangle_sketch",
+        sketchName: `Square ${size} mm`,
+        plane: "Top",
+        widthMm: size,
+        heightMm: size,
+        centerXmm: centers[index] ?? index * 60,
+        centerYmm: 0,
+        reason: "Creates a distinct, non-overlapping square profile"
+      })),
+      warnings: ["Deterministic 10 mm increments were chosen because the prompt did not specify dimensions."],
+      requiresApproval: true
+    };
+  }
   const feature = snapshot[0];
   if (!feature?.featureId || !feature?.name) throw new Error("The fake planner needs one named feature.");
   const parameter = feature.parameters?.[0];
-  const userRequest = markerIndex >= 0 ? text.slice(0, markerIndex) : text;
   if (/depth|dimension/i.test(userRequest) && parameter?.parameterId && parameter?.expression) {
     const newExpression = parameter.expression === "6 mm" ? "8 mm" : "6 mm";
     return {

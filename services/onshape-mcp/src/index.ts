@@ -79,6 +79,33 @@ server.registerTool("update_dimension", {
   return { content: [{ type: "text", text: message }] };
 });
 
+server.registerTool("create_rectangle_sketch", {
+  title: "Create a rectangle sketch",
+  description: "Create one axis-aligned rectangle or square sketch on the Top plane.",
+  inputSchema: {
+    ...contextShape,
+    sketchName: z.string().trim().min(1).max(100),
+    plane: z.literal("Top"),
+    widthMm: z.number().min(0.1).max(10_000),
+    heightMm: z.number().min(0.1).max(10_000),
+    centerXmm: z.number().min(-100_000).max(100_000),
+    centerYmm: z.number().min(-100_000).max(100_000)
+  },
+  annotations: { readOnlyHint: false, destructiveHint: false }
+}, async ({ sketchName, plane, widthMm, heightMm, centerXmm, centerYmm, ...context }) => {
+  const message = await client.applyOperation(context, {
+    type: "create_rectangle_sketch",
+    sketchName,
+    plane,
+    widthMm,
+    heightMm,
+    centerXmm,
+    centerYmm,
+    reason: "Approved MCP operation"
+  });
+  return { content: [{ type: "text", text: message }] };
+});
+
 server.registerTool("inspect_regeneration_errors", {
   title: "Inspect regeneration errors",
   description: "Read failed or warning feature states after an edit.",

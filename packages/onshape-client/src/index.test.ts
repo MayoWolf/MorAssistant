@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildOnshapeAuthorizationUrl, exchangeOnshapeCode, OnshapeClient } from "./index.js";
+import { buildOnshapeAuthorizationUrl, buildRectangleSketchFeature, exchangeOnshapeCode, OnshapeClient } from "./index.js";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -79,5 +79,63 @@ describe("Onshape feature edits", () => {
     const body = JSON.parse(String(request.body));
     expect(body.feature).toMatchObject({ featureId: "f1", featureType: "extrude", name: "Base extrusion", namespace: "" });
     expect(body).toMatchObject({ serializationVersion: "1.2.4", sourceMicroversion: "m1", rejectMicroversionSkew: true });
+  });
+
+  it("builds a closed rectangle sketch in Onshape's meter-based feature format", () => {
+    const feature = buildRectangleSketchFeature({
+      name: "20 mm square",
+      widthMm: 20,
+      heightMm: 20,
+      centerXmm: 30,
+      centerYmm: -10
+    }) as {
+      name: string;
+      featureType: string;
+      entities: Array<{ geometry: { pntX: number; pntY: number }; startParam: number; endParam: number; nodeId: string }>;
+      constraints: unknown[];
+      parameters: Array<{ parameterId: string; queries?: Array<{ deterministicIds: string[] }> }>;
+    };
+    expect(feature).toMatchObject({ name: "20 mm square", featureType: "newSketch" });
+    expect(feature.entities).toHaveLength(4);
+    expect(feature.entities[0]).toMatchObject({ geometry: { pntX: 0.03, pntY: -0.02 }, startParam: -0.01, endParam: 0.01 });
+    expect(feature.constraints).toHaveLength(8);
+    expect(feature.parameters[0]).toMatchObject({ parameterId: "sketchPlane", queries: [{ deterministicIds: ["JDC"] }] });
+    expect(feature.entities.every((entity) => !/[-_]/u.test(entity.nodeId))).toBe(true);
+  });
+
+  it("creates a rectangle sketch with a microversion guard", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        serializationVersion: "1.2.20",
+        sourceMicroversion: "m7",
+        features: []
+      }), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ feature: { featureId: "new1" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new OnshapeClient({ accessToken: () => "token" });
+    const message = await client.applyOperation({ documentId: "d", workspaceId: "w", elementId: "e" }, {
+      type: "create_rectangle_sketch",
+      sketchName: "Square 1",
+      plane: "Top",
+      widthMm: 10,
+      heightMm: 10,
+      centerXmm: 0,
+      centerYmm: 0,
+      reason: "Requested profile"
+    });
+
+    expect(message).toContain("Created Square 1");
+    expect(String(fetchMock.mock.calls[1]?.[0])).toMatch(/\/features$/u);
+    const body = JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body));
+    expect(body).toMatchObject({
+      btType: "BTFeatureDefinitionCall-1406",
+      serializationVersion: "1.2.20",
+      sourceMicroversion: "m7",
+      rejectMicroversionSkew: true,
+      feature: { btType: "BTMSketch-151", name: "Square 1", featureType: "newSketch" }
+    });
   });
 });

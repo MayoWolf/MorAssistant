@@ -155,7 +155,11 @@ function prunePlanJobs(): void {
 }
 
 function planJobError(error: unknown): string {
-  if (error instanceof z.ZodError) return "Codex returned a plan that did not pass validation.";
+  if (error instanceof z.ZodError) {
+    const issue = error.issues[0];
+    const location = issue?.path.length ? issue.path.join(".") : "plan";
+    return `Codex produced an invalid CAD plan at ${location}: ${issue?.message ?? "validation failed"}. Try the request again or make the intended geometry more specific.`;
+  }
   if (error instanceof Error) return error.message;
   return "Could not create a CAD plan.";
 }
