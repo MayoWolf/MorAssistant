@@ -17,7 +17,7 @@ import {
   type RegenerationError,
   type StoredCadPlan
 } from "@morassistant/cad-command-schema";
-import { CodexWorkerPool } from "@morassistant/codex-worker";
+import { CodexWorkerPool, type CodexRuntimeStatus } from "@morassistant/codex-worker";
 import {
   buildOnshapeAuthorizationUrl,
   exchangeOnshapeCode,
@@ -54,6 +54,7 @@ const envSchema = z.object({
   ONSHAPE_API_VERSION: z.string().default("v16"),
   ONSHAPE_SNAPSHOT_FRESH_MS: z.coerce.number().int().min(0).max(3_600_000).default(5 * 60_000),
   CODEX_MODEL: z.string().min(1).optional(),
+  CODEX_REASONING_EFFORT: z.enum(["none", "minimal", "low", "medium", "high", "xhigh"]).optional(),
   CODEX_COMMAND: z.string().default("codex"),
   CODEX_USERS_ROOT: z.string().default(resolve(repositoryRoot, "data/codex-users")),
   CODEX_MAX_WORKERS: z.coerce.number().int().min(1).max(100).default(4),
@@ -107,6 +108,7 @@ for (const expiredSessionId of sessionStore.pruneExpired(Date.now() - 90 * 24 * 
 const workers = new CodexWorkerPool(
   codexUsersRoot,
   env.CODEX_MODEL,
+  env.CODEX_REASONING_EFFORT,
   env.CODEX_COMMAND,
   env.CODEX_MAX_WORKERS,
   env.CODEX_IDLE_TIMEOUT_MS
@@ -208,7 +210,11 @@ function treeFromMutationResponse(
 
   let features = structuredClone(tree.features);
   const returnedFeature = responseRecord(result.feature) as OnshapeFeature | undefined;
-  if (operation.type === "create_rectangle_sketch" || operation.type === "create_feature") {
+  if (operation.type === "create_rectangle_sketch" ||
+    operation.type === "create_circle_sketch" ||
+    operation.type === "extrude_sketch" ||
+    operation.type === "fillet_feature_edges" ||
+    operation.type === "create_feature") {
     if (!returnedFeature || typeof returnedFeature.featureId !== "string") return undefined;
     features.push(returnedFeature);
   } else if (operation.type === "delete_feature") {
@@ -317,6 +323,13 @@ async function createStoredPlan(
     createdAt: new Date().toISOString(),
     agentTrace: {
       planningAttempts: planning.attempts,
+      runtime: {
+        ...(planning.runtime.configuredModel ? { configuredModel: planning.runtime.configuredModel } : {}),
+        model: planning.runtime.model,
+        ...(planning.runtime.modelProvider ? { modelProvider: planning.runtime.modelProvider } : {}),
+        ...(planning.runtime.reasoningEffort ? { reasoningEffort: planning.runtime.reasoningEffort } : {}),
+        ...(planning.runtime.serviceTier ? { serviceTier: planning.runtime.serviceTier } : {})
+      },
       featureCount: planning.inspection.featureCount,
       dependencyCount: planning.inspection.dependencyCount,
       geometry: planning.inspection.geometry,
@@ -636,10 +649,13 @@ app.get("/api/status", async (request, reply) => {
     });
   }
   let codex: "connected" | "pending" | "disconnected" = session.codexLoginId ? "pending" : "disconnected";
+  let codexRuntime: CodexRuntimeStatus | undefined;
   if (!session.codexLoginId && (session.codexConnected || env.INSTALLATION_TOKEN)) {
     try {
-      if (await workers.forUser(session.id).accountStatus() === "connected") {
+      const worker = workers.forUser(session.id);
+      if (await worker.accountStatus() === "connected") {
         codex = "connected";
+        codexRuntime = await worker.runtimeStatus();
         if (!session.codexConnected) {
           session.codexConnected = true;
           saveSession(session);
@@ -652,7 +668,11 @@ app.get("/api/status", async (request, reply) => {
       request.log.warn(logError(error), "Unable to read Codex account status");
     }
   }
-  return { onshape: session.onshapeTokens ? "connected" : "disconnected", codex };
+  return {
+    onshape: session.onshapeTokens ? "connected" : "disconnected",
+    codex,
+    ...(codexRuntime ? { codexRuntime } : {})
+  };
 });
 
 app.get("/oauth/onshape/start", async (request, reply) => {

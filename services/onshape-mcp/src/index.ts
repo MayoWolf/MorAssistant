@@ -135,6 +135,81 @@ server.registerTool("create_rectangle_sketch", {
   return { content: [{ type: "text", text: message }] };
 });
 
+server.registerTool("create_circle_sketch", {
+  title: "Create a circle sketch",
+  description: "Create one native circle sketch on the Top plane.",
+  inputSchema: {
+    ...contextShape,
+    sketchName: z.string().trim().min(1).max(100),
+    plane: z.literal("Top"),
+    radiusMm: z.number().min(0.05).max(10_000),
+    centerXmm: z.number().min(-100_000).max(100_000),
+    centerYmm: z.number().min(-100_000).max(100_000)
+  },
+  annotations: { readOnlyHint: false, destructiveHint: false }
+}, async ({ sketchName, plane, radiusMm, centerXmm, centerYmm, ...context }) => {
+  const message = await client.applyOperation(context, {
+    type: "create_circle_sketch",
+    sketchName,
+    plane,
+    radiusMm,
+    centerXmm,
+    centerYmm,
+    reason: "Approved MCP operation"
+  });
+  return { content: [{ type: "text", text: message }] };
+});
+
+server.registerTool("extrude_sketch", {
+  title: "Extrude a sketch",
+  description: "Create a guarded blind solid extrude from a named sketch; supports new, add, remove, and intersect.",
+  inputSchema: {
+    ...contextShape,
+    featureName: z.string().trim().min(1).max(100),
+    sourceFeatureName: z.string().trim().min(1).max(100),
+    depthMm: z.number().min(0.05).max(100_000),
+    operation: z.enum(["NEW", "ADD", "REMOVE", "INTERSECT"]),
+    oppositeDirection: z.boolean(),
+    symmetric: z.boolean()
+  },
+  annotations: { readOnlyHint: false, destructiveHint: false }
+}, async ({ featureName, sourceFeatureName, depthMm, operation, oppositeDirection, symmetric, ...context }) => {
+  const message = await client.applyOperation(context, {
+    type: "extrude_sketch",
+    featureName,
+    sourceFeatureName,
+    depthMm,
+    operation,
+    oppositeDirection,
+    symmetric,
+    reason: "Approved MCP operation"
+  });
+  return { content: [{ type: "text", text: message }] };
+});
+
+server.registerTool("fillet_feature_edges", {
+  title: "Fillet feature-created edges",
+  description: "Resolve and fillet all current solid edges created by a named feature.",
+  inputSchema: {
+    ...contextShape,
+    featureName: z.string().trim().min(1).max(100),
+    targetFeatureName: z.string().trim().min(1).max(100),
+    radiusMm: z.number().min(0.01).max(10_000),
+    tangentPropagation: z.boolean()
+  },
+  annotations: { readOnlyHint: false, destructiveHint: false }
+}, async ({ featureName, targetFeatureName, radiusMm, tangentPropagation, ...context }) => {
+  const message = await client.applyOperation(context, {
+    type: "fillet_feature_edges",
+    featureName,
+    targetFeatureName,
+    radiusMm,
+    tangentPropagation,
+    reason: "Approved MCP operation"
+  });
+  return { content: [{ type: "text", text: message }] };
+});
+
 server.registerTool("create_feature", {
   title: "Create a native Part Studio feature",
   description: "Create any validated BTMFeature-134 or BTMSketch-151 payload.",

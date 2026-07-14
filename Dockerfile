@@ -19,7 +19,7 @@ FROM node:24-bookworm-slim AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates gosu \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install --global @openai/codex@0.142.5 \
+    && npm install --global @openai/codex@0.144.4 \
     && npm cache clean --force
 
 WORKDIR /app

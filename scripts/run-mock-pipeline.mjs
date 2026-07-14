@@ -190,6 +190,8 @@ const api = spawn(process.execPath, [resolve(root, "services/api/dist/server.js"
     ONSHAPE_BASE_URL: onshapeOrigin,
     ONSHAPE_API_VERSION: "v13",
     ONSHAPE_SNAPSHOT_FRESH_MS: "0",
+    CODEX_MODEL: "gpt-5.6-sol",
+    CODEX_REASONING_EFFORT: "high",
     CODEX_COMMAND: resolve(root, "scripts/fake-codex-app-server.mjs"),
     CODEX_USERS_ROOT: codexHome
   },

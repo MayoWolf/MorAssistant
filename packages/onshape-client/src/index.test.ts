@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildOnshapeAuthorizationUrl,
   buildFeatureDependencyGraph,
+  buildCircleSketchFeature,
+  buildExtrudeFeature,
+  buildFilletFeature,
   buildRectangleSketchFeature,
   exchangeOnshapeCode,
   featureFingerprint,
@@ -210,6 +213,118 @@ describe("Onshape feature edits", () => {
     expect(feature.constraints).toHaveLength(8);
     expect(feature.parameters[0]).toMatchObject({ parameterId: "sketchPlane", queries: [{ deterministicIds: ["JDC"] }] });
     expect(feature.entities.every((entity) => !/[-_]/u.test(entity.nodeId))).toBe(true);
+  });
+
+  it("builds native circle, blind extrude, and feature-edge fillet payloads", () => {
+    const circle = buildCircleSketchFeature({
+      name: "Cylinder profile",
+      radiusMm: 12,
+      centerXmm: 40,
+      centerYmm: -5
+    }) as Record<string, unknown> & { entities: Array<Record<string, unknown>>; parameters: Array<Record<string, unknown>> };
+    expect(circle).toMatchObject({ btType: "BTMSketch-151", name: "Cylinder profile", featureType: "newSketch" });
+    expect(circle.entities[0]).toMatchObject({
+      btType: "BTMSketchCurve-4",
+      geometry: { btType: "BTCurveGeometryCircle-115", radius: 0.012, xCenter: 0.04, yCenter: -0.005 }
+    });
+
+    const extrude = buildExtrudeFeature({
+      name: "Cylinder body",
+      sketchFeatureId: "sketch1",
+      depthMm: 30,
+      operation: "NEW",
+      oppositeDirection: false,
+      symmetric: false
+    }) as Record<string, unknown> & { parameters: Array<Record<string, unknown>> };
+    expect(extrude).toMatchObject({ btType: "BTMFeature-134", name: "Cylinder body", featureType: "extrude" });
+    expect(extrude.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ parameterId: "operationType", enumName: "NewBodyOperationType", value: "NEW" }),
+      expect.objectContaining({ parameterId: "depth", expression: "30 mm" }),
+      expect.objectContaining({ parameterId: "defaultScope", value: false })
+    ]));
+    expect(JSON.stringify(extrude)).toContain('qSketchRegion(id + \\"sketch1\\", true)');
+
+    const fillet = buildFilletFeature({
+      name: "Rounded cylinder",
+      edgeTransientIds: ["JLB", "JLF"],
+      radiusMm: 2,
+      tangentPropagation: true
+    }) as Record<string, unknown> & { parameters: Array<Record<string, unknown>> };
+    expect(fillet).toMatchObject({ btType: "BTMFeature-134", name: "Rounded cylinder", featureType: "fillet" });
+    expect(fillet.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ parameterId: "filletType", enumName: "FilletType", value: "EDGE" }),
+      expect.objectContaining({ parameterId: "radius", expression: "2 mm" }),
+      expect.objectContaining({ parameterId: "tangentPropagation", value: true })
+    ]));
+    expect(JSON.stringify(fillet)).toContain('qTransient(\\"JLB\\")');
+  });
+
+  it("executes typed circle, extrude, and fillet operations with guarded mutations", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ feature: { featureId: "sketch1" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ feature: { featureId: "extrude1" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        result: {
+          btType: "com.belmonttech.serialize.fsvalue.BTFSValueArray",
+          value: [
+            { btType: "com.belmonttech.serialize.fsvalue.BTFSValueString", value: "JLB" },
+            { btType: "com.belmonttech.serialize.fsvalue.BTFSValueString", value: "JLF" }
+          ]
+        }
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ feature: { featureId: "fillet1" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new OnshapeClient({ accessToken: () => "token" });
+    const context = { documentId: "d", workspaceId: "w", elementId: "e" };
+    const concurrency = { serializationVersion: "1.2.30", sourceMicroversion: "m1" };
+
+    await client.applyOperationDetailed(context, {
+      type: "create_circle_sketch",
+      sketchName: "Cylinder profile",
+      plane: "Top",
+      radiusMm: 12,
+      centerXmm: 0,
+      centerYmm: 0,
+      reason: "Profile"
+    }, { ...concurrency, features: [] });
+    await client.applyOperationDetailed(context, {
+      type: "extrude_sketch",
+      featureName: "Cylinder body",
+      sourceFeatureName: "Cylinder profile",
+      depthMm: 30,
+      operation: "NEW",
+      oppositeDirection: false,
+      symmetric: false,
+      reason: "Solid"
+    }, { ...concurrency, features: [{ featureId: "sketch1", name: "Cylinder profile", featureType: "newSketch" }] });
+    await client.applyOperationDetailed(context, {
+      type: "fillet_feature_edges",
+      featureName: "Rounded cylinder",
+      targetFeatureName: "Cylinder body",
+      radiusMm: 2,
+      tangentPropagation: true,
+      reason: "Round"
+    }, { ...concurrency, features: [{ featureId: "extrude1", name: "Cylinder body", featureType: "extrude" }] });
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    for (const call of [fetchMock.mock.calls[0], fetchMock.mock.calls[1], fetchMock.mock.calls[3]]) {
+      if (!call) throw new Error("Expected mutation request");
+      const body = JSON.parse(String((call[1] as RequestInit).body));
+      expect(body).toMatchObject({ serializationVersion: "1.2.30", sourceMicroversion: "m1", rejectMicroversionSkew: true });
+    }
+    expect(String(fetchMock.mock.calls[2]?.[0])).toContain("/featurescript?rollbackBarIndex=-1");
   });
 
   it("creates a rectangle sketch with a microversion guard", async () => {

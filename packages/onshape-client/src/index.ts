@@ -2,8 +2,18 @@ import { createHash } from "node:crypto";
 import { parseFeatureJson, type CadOperation, type RegenerationError } from "@morassistant/cad-command-schema";
 import type { PartStudioContext } from "@morassistant/shared-types";
 import { buildRectangleSketchFeature } from "./rectangle-sketch.js";
+import { buildCircleSketchFeature, buildExtrudeFeature, buildFilletFeature } from "./native-features.js";
 
 export { buildRectangleSketchFeature } from "./rectangle-sketch.js";
+export {
+  buildCircleSketchFeature,
+  buildExtrudeFeature,
+  buildFilletFeature,
+  type CircleSketchInput,
+  type ExtrudeFeatureInput,
+  type ExtrudeOperation,
+  type FilletFeatureInput
+} from "./native-features.js";
 
 export interface OnshapeOAuthConfig {
   clientId: string;
@@ -505,6 +515,32 @@ export class OnshapeClient {
     );
   }
 
+  async getTransientIdsForFeatureEdges(
+    context: PartStudioContext,
+    featureId: string,
+    libraryVersion?: number
+  ): Promise<string[]> {
+    const script = [
+      "function(context is Context, definition is map)",
+      "{",
+      "    var ids = [];",
+      `    for (var edge in evaluateQuery(context, qCreatedBy(makeId(${JSON.stringify(featureId)}), EntityType.EDGE)))`,
+      "    {",
+      "        ids = append(ids, edge.transientId);",
+      "    }",
+      "    return ids;",
+      "}"
+    ].join("\n");
+    const response = await this.evaluateFeatureScript(context, script, libraryVersion);
+    const result = response && typeof response === "object"
+      ? featureScriptPrimitive((response as Record<string, unknown>).result)
+      : undefined;
+    if (!Array.isArray(result) || !result.every((item) => typeof item === "string" && item.length > 0)) {
+      throw new Error(`Onshape did not return a valid edge selection for feature ${featureId}.`);
+    }
+    return [...new Set(result)];
+  }
+
   async inspectPartStudio(
     context: PartStudioContext,
     existingFeatureTree?: FeatureListResponse,
@@ -625,6 +661,74 @@ export class OnshapeClient {
       }), tree);
       return {
         message: `Created ${operation.sketchName}: ${operation.widthMm} mm × ${operation.heightMm} mm on the Top plane.`,
+        response
+      };
+    }
+
+    if (operation.type === "create_circle_sketch") {
+      if (tree.features.some((feature) => feature.name?.toLocaleLowerCase() === operation.sketchName.toLocaleLowerCase())) {
+        throw new Error(`A feature named ${operation.sketchName} already exists.`);
+      }
+      const response = await this.addFeature(context, buildCircleSketchFeature({
+        name: operation.sketchName,
+        radiusMm: operation.radiusMm,
+        centerXmm: operation.centerXmm,
+        centerYmm: operation.centerYmm
+      }), tree);
+      return {
+        message: `Created ${operation.sketchName}: Ø${operation.radiusMm * 2} mm on the Top plane.`,
+        response
+      };
+    }
+
+    if (operation.type === "extrude_sketch") {
+      if (tree.features.some((feature) => feature.name?.toLocaleLowerCase() === operation.featureName.toLocaleLowerCase())) {
+        throw new Error(`A feature named ${operation.featureName} already exists.`);
+      }
+      const source = tree.features.find(
+        (feature) => feature.name?.toLocaleLowerCase() === operation.sourceFeatureName.toLocaleLowerCase()
+      );
+      if (!source) throw new Error(`Extrude source sketch ${operation.sourceFeatureName} was not found.`);
+      if (source.featureType !== "newSketch") throw new Error(`${operation.sourceFeatureName} is not a sketch.`);
+      const response = await this.addFeature(context, buildExtrudeFeature({
+        name: operation.featureName,
+        sketchFeatureId: source.featureId,
+        depthMm: operation.depthMm,
+        operation: operation.operation,
+        oppositeDirection: operation.oppositeDirection,
+        symmetric: operation.symmetric
+      }), tree);
+      const verb = operation.operation === "REMOVE" ? "Cut" : operation.operation === "ADD" ? "Added" : "Extruded";
+      return {
+        message: `${verb} ${operation.sourceFeatureName} by ${operation.depthMm} mm as ${operation.featureName} (${operation.operation}).`,
+        response
+      };
+    }
+
+    if (operation.type === "fillet_feature_edges") {
+      if (tree.features.some((feature) => feature.name?.toLocaleLowerCase() === operation.featureName.toLocaleLowerCase())) {
+        throw new Error(`A feature named ${operation.featureName} already exists.`);
+      }
+      const target = tree.features.find(
+        (feature) => feature.name?.toLocaleLowerCase() === operation.targetFeatureName.toLocaleLowerCase()
+      );
+      if (!target) throw new Error(`Fillet target ${operation.targetFeatureName} was not found.`);
+      const edgeTransientIds = await this.getTransientIdsForFeatureEdges(
+        context,
+        target.featureId,
+        typeof tree.libraryVersion === "number" ? tree.libraryVersion : undefined
+      );
+      if (edgeTransientIds.length === 0) {
+        throw new Error(`${operation.targetFeatureName} did not create any filletable edges.`);
+      }
+      const response = await this.addFeature(context, buildFilletFeature({
+        name: operation.featureName,
+        edgeTransientIds,
+        radiusMm: operation.radiusMm,
+        tangentPropagation: operation.tangentPropagation
+      }), tree);
+      return {
+        message: `Created ${operation.featureName}: ${operation.radiusMm} mm fillet on edges created by ${operation.targetFeatureName}.`,
         response
       };
     }

@@ -99,6 +99,36 @@ export const createRectangleSketchOperationSchema = z.object({
   reason: z.string().min(1).max(500)
 }).strict();
 
+export const createCircleSketchOperationSchema = z.object({
+  type: z.literal("create_circle_sketch"),
+  sketchName: z.string().trim().min(1).max(100),
+  plane: z.literal("Top"),
+  radiusMm: z.number().finite().min(0.05).max(10_000),
+  centerXmm: z.number().finite().min(-100_000).max(100_000),
+  centerYmm: z.number().finite().min(-100_000).max(100_000),
+  reason: z.string().min(1).max(500)
+}).strict();
+
+export const extrudeSketchOperationSchema = z.object({
+  type: z.literal("extrude_sketch"),
+  featureName: z.string().trim().min(1).max(100),
+  sourceFeatureName: z.string().trim().min(1).max(100),
+  depthMm: z.number().finite().min(0.05).max(100_000),
+  operation: z.enum(["NEW", "ADD", "REMOVE", "INTERSECT"]),
+  oppositeDirection: z.boolean(),
+  symmetric: z.boolean(),
+  reason: z.string().min(1).max(500)
+}).strict();
+
+export const filletFeatureEdgesOperationSchema = z.object({
+  type: z.literal("fillet_feature_edges"),
+  featureName: z.string().trim().min(1).max(100),
+  targetFeatureName: z.string().trim().min(1).max(100),
+  radiusMm: z.number().finite().min(0.01).max(10_000),
+  tangentPropagation: z.boolean(),
+  reason: z.string().min(1).max(500)
+}).strict();
+
 export const createFeatureOperationSchema = z.object({
   type: z.literal("create_feature"),
   featureName: z.string().trim().min(1).max(100),
@@ -163,6 +193,9 @@ export const cadOperationSchema = z.discriminatedUnion("type", [
   renameFeatureOperationSchema,
   updateDimensionOperationSchema,
   createRectangleSketchOperationSchema,
+  createCircleSketchOperationSchema,
+  extrudeSketchOperationSchema,
+  filletFeatureEdgesOperationSchema,
   createFeatureOperationSchema,
   replaceFeatureOperationSchema,
   deleteFeatureOperationSchema
@@ -183,9 +216,9 @@ export const cadPlanSchema = z.object({
       ? `rename:${operation.featureId}`
       : operation.type === "update_dimension"
         ? `dimension:${operation.featureId}:${operation.parameterId}`
-        : operation.type === "create_rectangle_sketch"
+        : operation.type === "create_rectangle_sketch" || operation.type === "create_circle_sketch"
           ? `new-feature:${operation.sketchName.toLocaleLowerCase()}`
-          : operation.type === "create_feature"
+          : operation.type === "create_feature" || operation.type === "extrude_sketch" || operation.type === "fillet_feature_edges"
             ? `new-feature:${operation.featureName.toLocaleLowerCase()}`
             : `whole-feature:${operation.featureId}`;
     if (targets.has(target)) {
@@ -209,7 +242,7 @@ export const cadPlanSchema = z.object({
     if (operation.type === "delete_feature" && plan.risk !== "high") {
       context.addIssue({ code: "custom", path: ["risk"], message: "Plans that delete features must be high risk." });
     }
-    if (["create_feature", "replace_feature"].includes(operation.type) && plan.risk === "low") {
+    if (["create_feature", "replace_feature", "extrude_sketch", "fillet_feature_edges"].includes(operation.type) && plan.risk === "low") {
       context.addIssue({ code: "custom", path: ["risk"], message: "Native feature payload plans must be at least medium risk." });
     }
   }
@@ -226,6 +259,13 @@ export interface StoredCadPlan extends CadPlan {
   createdAt: string;
   agentTrace?: {
     planningAttempts: number;
+    runtime?: {
+      configuredModel?: string;
+      model: string;
+      modelProvider?: string;
+      reasoningEffort?: string;
+      serviceTier?: string;
+    };
     featureCount: number;
     dependencyCount: number;
     geometry: {
@@ -297,8 +337,16 @@ export const CAD_PLAN_JSON_SCHEMA = {
           "plane",
           "widthMm",
           "heightMm",
+          "radiusMm",
           "centerXmm",
           "centerYmm",
+          "sourceFeatureName",
+          "depthMm",
+          "operation",
+          "oppositeDirection",
+          "symmetric",
+          "targetFeatureName",
+          "tangentPropagation",
           "currentFeatureHash",
           "featureType",
           "featureJson",
@@ -307,7 +355,17 @@ export const CAD_PLAN_JSON_SCHEMA = {
         properties: {
           type: {
             type: "string",
-            enum: ["rename_feature", "update_dimension", "create_rectangle_sketch", "create_feature", "replace_feature", "delete_feature"]
+            enum: [
+              "rename_feature",
+              "update_dimension",
+              "create_rectangle_sketch",
+              "create_circle_sketch",
+              "extrude_sketch",
+              "fillet_feature_edges",
+              "create_feature",
+              "replace_feature",
+              "delete_feature"
+            ]
           },
           featureId: {
             type: ["string", "null"],
@@ -342,7 +400,7 @@ export const CAD_PLAN_JSON_SCHEMA = {
           sketchName: {
             type: ["string", "null"],
             maxLength: 100,
-            description: "Unique new sketch name for create_rectangle_sketch; null for other operation types."
+            description: "Unique new sketch name for create_rectangle_sketch or create_circle_sketch; null for other operation types."
           },
           plane: {
             type: ["string", "null"],
@@ -361,6 +419,12 @@ export const CAD_PLAN_JSON_SCHEMA = {
             maximum: 10_000,
             description: "Rectangle height in millimeters for create_rectangle_sketch; null otherwise."
           },
+          radiusMm: {
+            type: ["number", "null"],
+            minimum: 0.01,
+            maximum: 10_000,
+            description: "Circle radius for create_circle_sketch or edge radius for fillet_feature_edges, in millimeters; null otherwise."
+          },
           centerXmm: {
             type: ["number", "null"],
             minimum: -100_000,
@@ -372,6 +436,39 @@ export const CAD_PLAN_JSON_SCHEMA = {
             minimum: -100_000,
             maximum: 100_000,
             description: "Rectangle center Y in millimeters for create_rectangle_sketch; null otherwise."
+          },
+          sourceFeatureName: {
+            type: ["string", "null"],
+            maxLength: 100,
+            description: "Existing or earlier-created sketch name for extrude_sketch; null otherwise."
+          },
+          depthMm: {
+            type: ["number", "null"],
+            minimum: 0.05,
+            maximum: 100_000,
+            description: "Positive blind extrude distance in millimeters for extrude_sketch; null otherwise."
+          },
+          operation: {
+            type: ["string", "null"],
+            enum: ["NEW", "ADD", "REMOVE", "INTERSECT", null],
+            description: "Solid operation for extrude_sketch; null otherwise."
+          },
+          oppositeDirection: {
+            type: ["boolean", "null"],
+            description: "Whether extrude_sketch runs opposite the sketch normal; null otherwise."
+          },
+          symmetric: {
+            type: ["boolean", "null"],
+            description: "Whether extrude_sketch is symmetric about the sketch plane; null otherwise."
+          },
+          targetFeatureName: {
+            type: ["string", "null"],
+            maxLength: 100,
+            description: "Existing or earlier-created solid feature whose created edges are filleted; null otherwise."
+          },
+          tangentPropagation: {
+            type: ["boolean", "null"],
+            description: "Tangent propagation for fillet_feature_edges; null otherwise."
           },
           currentFeatureHash: {
             type: ["string", "null"],
@@ -443,6 +540,39 @@ export function normalizeCadPlanOutput(input: unknown): unknown {
           reason: value.reason
         };
       }
+      if (value.type === "create_circle_sketch") {
+        return {
+          type: value.type,
+          sketchName: value.sketchName,
+          plane: value.plane,
+          radiusMm: value.radiusMm,
+          centerXmm: value.centerXmm,
+          centerYmm: value.centerYmm,
+          reason: value.reason
+        };
+      }
+      if (value.type === "extrude_sketch") {
+        return {
+          type: value.type,
+          featureName: value.featureName,
+          sourceFeatureName: value.sourceFeatureName,
+          depthMm: value.depthMm,
+          operation: value.operation,
+          oppositeDirection: value.oppositeDirection,
+          symmetric: value.symmetric,
+          reason: value.reason
+        };
+      }
+      if (value.type === "fillet_feature_edges") {
+        return {
+          type: value.type,
+          featureName: value.featureName,
+          targetFeatureName: value.targetFeatureName,
+          radiusMm: value.radiusMm,
+          tangentPropagation: value.tangentPropagation,
+          reason: value.reason
+        };
+      }
       if (value.type === "create_feature") {
         return {
           type: value.type,
@@ -484,14 +614,26 @@ export function validatePlanAgainstFeatureTree(
   const names = new Set(features.flatMap((feature) => feature.name ? [feature.name.toLocaleLowerCase()] : []));
 
   for (const operation of plan.operations) {
-    if (operation.type === "create_rectangle_sketch" || operation.type === "create_feature") {
-      const name = operation.type === "create_rectangle_sketch" ? operation.sketchName : operation.featureName;
+    if (operation.type === "create_rectangle_sketch" ||
+      operation.type === "create_circle_sketch" ||
+      operation.type === "extrude_sketch" ||
+      operation.type === "fillet_feature_edges" ||
+      operation.type === "create_feature") {
+      const name = operation.type === "create_rectangle_sketch" || operation.type === "create_circle_sketch"
+        ? operation.sketchName
+        : operation.featureName;
       if (operation.type === "create_feature") {
         for (const reference of featureReferences(parseFeatureJson(operation.featureJson))) {
           if (!names.has(reference.toLocaleLowerCase())) {
             throw new Error(`Feature payload references unavailable feature ${reference}. Put its creation earlier in the plan.`);
           }
         }
+      }
+      if (operation.type === "extrude_sketch" && !names.has(operation.sourceFeatureName.toLocaleLowerCase())) {
+        throw new Error(`Extrude source ${operation.sourceFeatureName} is unavailable. Put its sketch creation earlier in the plan.`);
+      }
+      if (operation.type === "fillet_feature_edges" && !names.has(operation.targetFeatureName.toLocaleLowerCase())) {
+        throw new Error(`Fillet target ${operation.targetFeatureName} is unavailable. Put its solid feature creation earlier in the plan.`);
       }
       if (names.has(name.toLocaleLowerCase())) {
         throw new Error(`A feature named ${name} already exists.`);

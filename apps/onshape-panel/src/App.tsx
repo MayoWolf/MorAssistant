@@ -110,6 +110,9 @@ function operationTitle(operation: PlanOperation): string {
     case "rename_feature": return "Rename feature";
     case "update_dimension": return "Update dimension";
     case "create_rectangle_sketch": return "Create rectangle sketch";
+    case "create_circle_sketch": return "Create circle sketch";
+    case "extrude_sketch": return "Extrude sketch";
+    case "fillet_feature_edges": return "Fillet feature edges";
     case "create_feature": return "Create native feature";
     case "replace_feature": return "Replace native feature";
     case "delete_feature": return "Delete feature";
@@ -124,6 +127,12 @@ function OperationDetail({ operation }: { operation: PlanOperation }) {
       return <p><code>{operation.featureName}.{operation.parameterId}</code><i>→</i><code>{operation.newExpression}</code></p>;
     case "create_rectangle_sketch":
       return <p><code>{operation.sketchName}</code><i>·</i><code>{operation.widthMm} × {operation.heightMm} mm · {operation.plane}</code></p>;
+    case "create_circle_sketch":
+      return <p><code>{operation.sketchName}</code><i>·</i><code>Ø{operation.radiusMm * 2} mm · {operation.plane}</code></p>;
+    case "extrude_sketch":
+      return <p><code>{operation.sourceFeatureName}</code><i>→</i><code>{operation.featureName} · {operation.depthMm} mm · {operation.operation}</code></p>;
+    case "fillet_feature_edges":
+      return <p><code>{operation.targetFeatureName}</code><i>→</i><code>{operation.featureName} · R{operation.radiusMm} mm</code></p>;
     case "create_feature":
       return <p><code>{operation.featureName}</code><i>·</i><code>{operation.featureType}</code></p>;
     case "replace_feature":
@@ -239,12 +248,15 @@ export function App() {
   };
 
   const ready = status?.onshape === "connected" && status.codex === "connected" && Boolean(context);
+  const runtimeLabel = status?.codexRuntime
+    ? `${status.codexRuntime.model.replace(/^gpt-/u, "GPT ").replace(/-sol$/u, " Sol")}${status.codexRuntime.reasoningEffort ? ` · ${status.codexRuntime.reasoningEffort}` : ""}`
+    : "Codex";
 
   return <main>
     <header>
       <div className="brand"><BrandMark /><div><strong>MorAssistant</strong><span>Onshape copilot</span></div></div>
       <div className="connections">
-        <ConnectionPill label="Codex" state={status?.codex ?? "loading"} />
+        <ConnectionPill label={runtimeLabel} state={status?.codexRuntime && !status.codexRuntime.available ? "disconnected" : status?.codex ?? "loading"} />
       </div>
     </header>
 
@@ -311,6 +323,10 @@ export function App() {
         <span><strong>{plan.agentTrace.geometry.solidBodyCount ?? plan.agentTrace.geometry.partCount ?? "—"}</strong><small>solid bodies</small></span>
         <span><strong>{plan.agentTrace.planningAttempts}</strong><small>validation pass{plan.agentTrace.planningAttempts === 1 ? "" : "es"}</small></span>
       </div>}
+      {plan.agentTrace?.runtime && <p className="runtime-proof">
+        Planned by <strong>{plan.agentTrace.runtime.model}</strong>
+        {plan.agentTrace.runtime.reasoningEffort ? ` · ${plan.agentTrace.runtime.reasoningEffort} reasoning` : ""}
+      </p>}
       <ol className="operations">
         {plan.operations.map((operation, index) => <li key={`${operation.type}-${index}`}>
           <span className="op-index">{String(index + 1).padStart(2, "0")}</span>

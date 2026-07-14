@@ -112,6 +112,11 @@ textarea:disabled { cursor: not-allowed; }
 .agent-trace span { min-width: 0; padding: 9px 6px; display: flex; flex-direction: column; align-items: center; background: #f6f8f4; text-align: center; }
 .agent-trace strong { color: var(--green-dark); font: 600 11px ui-monospace, SFMono-Regular, monospace; }
 .agent-trace small { margin-top: 2px; color: var(--muted); font-size: 7px; line-height: 1.25; }
+.runtime-proof {
+  margin: 0; padding: 8px 16px; color: #52615b; background: #f8faf7;
+  border-top: 1px solid #e5e8e4; font: 500 8px/1.4 ui-monospace, SFMono-Regular, monospace;
+}
+.runtime-proof strong { color: var(--green-dark); font-weight: 700; }
 .operations { margin: 0; padding: 0; list-style: none; border-top: 1px solid #e5e8e4; }
 .operations li { position: relative; display: grid; grid-template-columns: 29px 1fr auto; gap: 9px; padding: 13px 16px; border-bottom: 1px solid #e5e8e4; }
 .op-index { padding-top: 1px; color: #87908c; font: 500 9px ui-monospace, SFMono-Regular, monospace; }

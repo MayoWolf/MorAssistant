@@ -118,12 +118,22 @@ export interface DeviceCodeResponse {
 export interface PlanningResult {
   plan: CadPlan;
   attempts: number;
+  runtime: CodexRuntimeStatus;
   inspection: {
     featureCount: number;
     dependencyCount: number;
     geometry: PartStudioGeometrySummary;
     warnings: string[];
   };
+}
+
+export interface CodexRuntimeStatus {
+  configuredModel?: string;
+  model: string;
+  modelProvider?: string;
+  reasoningEffort?: string;
+  serviceTier?: string;
+  available: boolean;
 }
 
 export class CodexWorker {
@@ -138,6 +148,7 @@ export class CodexWorker {
   constructor(
     readonly codexHome: string,
     private readonly model?: string,
+    private readonly reasoningEffort?: string,
     private readonly codexCommand = "codex"
   ) {}
 
@@ -290,6 +301,35 @@ export class CodexWorker {
     return response.account ? "connected" : "disconnected";
   }
 
+  async runtimeStatus(): Promise<CodexRuntimeStatus> {
+    await this.start();
+    const response = await this.request("model/list", { limit: 100 }) as {
+      data?: Array<{
+        id?: string;
+        model?: string;
+        isDefault?: boolean;
+        defaultReasoningEffort?: string;
+        supportedReasoningEfforts?: Array<{ reasoningEffort?: string } | string>;
+      }>;
+    };
+    const models = response.data ?? [];
+    const selected = this.model
+      ? models.find((candidate) => candidate.id === this.model || candidate.model === this.model)
+      : models.find((candidate) => candidate.isDefault) ?? models[0];
+    const model = selected?.model ?? selected?.id ?? this.model ?? "unavailable";
+    const supportedEfforts = (selected?.supportedReasoningEfforts ?? []).map((effort) =>
+      typeof effort === "string" ? effort : effort.reasoningEffort
+    );
+    const effortAvailable = !this.reasoningEffort || supportedEfforts.length === 0 || supportedEfforts.includes(this.reasoningEffort);
+    const runtimeEffort = this.reasoningEffort ?? selected?.defaultReasoningEffort;
+    return {
+      ...(this.model ? { configuredModel: this.model } : {}),
+      model,
+      ...(runtimeEffort ? { reasoningEffort: runtimeEffort } : {}),
+      available: Boolean(selected) && effortAvailable
+    };
+  }
+
   async startDeviceCodeLogin(): Promise<DeviceCodeResponse> {
     await this.start();
     const response = await this.request("account/login/start", { type: "chatgptDeviceCode" }) as DeviceCodeResponse;
@@ -310,6 +350,7 @@ export class CodexWorker {
       cwd: join(this.codexHome, "workspace"),
       approvalPolicy: "never",
       sandboxPolicy: { type: "readOnly", networkAccess: false },
+      ...(this.reasoningEffort ? { effort: this.reasoningEffort } : {}),
       input: [{ type: "text", text, text_elements: [] }],
       outputSchema: CAD_PLAN_JSON_SCHEMA
     }) as { turn: { id: string } };
@@ -344,6 +385,10 @@ export class CodexWorker {
   async createPlan(prompt: string, inspection: PartStudioInspection): Promise<PlanningResult> {
     await this.start();
     if (await this.accountStatus() !== "connected") throw new Error("Connect ChatGPT before creating a plan.");
+    const configuredRuntime = await this.runtimeStatus();
+    if (!configuredRuntime.available) {
+      throw new Error(`Configured Codex runtime ${this.model ?? "default"}${this.reasoningEffort ? ` at ${this.reasoningEffort} effort` : ""} is unavailable for this ChatGPT account. MorAssistant will not silently downgrade.`);
+    }
 
     let featurePayloadBudget = 200_000;
     const dependencyById = new Map(inspection.dependencies.map((node) => [node.featureId, node]));
@@ -392,9 +437,13 @@ export class CodexWorker {
         "Do not modify or remove a feature without considering its usedBy downstream dependents. Surface any material downstream risk in warnings.",
         "For rename_feature and update_dimension, use only feature IDs, parameter IDs, names, and current expressions present in the snapshot.",
         "You may create new axis-aligned rectangle or square sketches with create_rectangle_sketch; it needs no existing feature ID and currently supports only the Top plane.",
+        "Use create_circle_sketch for native Top-plane circles. It takes a radius and center in millimeters and is the reliable first step for cylinders and round holes.",
+        "Use extrude_sketch for blind solid extrudes from a named existing or earlier-created sketch. Set operation to NEW for a separate solid, ADD to join intersecting material, REMOVE to cut a hole or pocket, or INTERSECT to keep common material.",
+        "Use fillet_feature_edges to fillet every solid edge created by a named existing or earlier-created feature. Choose a conservative radius smaller than the target's smallest plausible half-dimension.",
+        "A cylinder is exactly create_circle_sketch followed by extrude_sketch with NEW. A round through-pocket is create_circle_sketch followed by extrude_sketch with REMOVE and a depth that passes through the target solid. Prefer these typed recipes over create_feature.",
         "For squares, widthMm and heightMm must be equal. When dimensions are omitted, choose clear deterministic sizes and mention the choice in warnings.",
         "Give every new sketch a unique descriptive name. Separate multiple rectangles with centerXmm and centerYmm so they do not overlap.",
-        "For any other standard Part Studio feature, use create_feature with an exact native Onshape BTMFeature-134 or BTMSketch-151 object serialized as minified featureJson.",
+        "For a feature not covered by a typed operation, use create_feature only when an exact native Onshape BTMFeature-134 or BTMSketch-151 payload can be derived from the supplied snapshot. Never guess a payload.",
         "create_feature supports standard sketches, variables, extrude, revolve, sweep, loft, fillet, chamfer, shell, hole, draft, rib, boolean, split, transform, patterns, mate connectors, and other valid Part Studio featureType payloads.",
         "When the user asks to make a model parametric, use repeatedExpressions as evidence: create well-named native variable features only with a valid exact payload, then replace matching literal quantity expressions with #variable references.",
         "Use @feature:Exact Feature Name anywhere featureJson needs a featureId. Creation operations may reference features created earlier in the same ordered plan.",
@@ -405,7 +454,25 @@ export class CodexWorker {
         "Do not invent existing IDs, payload fields, or unsupported references. Every change requires explicit user approval.",
         "Prefer the smallest set of reversible edits. Flag uncertainty in warnings."
       ].join("\n")
-    }) as { thread: { id: string } };
+    }) as {
+      thread: { id: string };
+      model: string;
+      modelProvider: string;
+      reasoningEffort?: string | null;
+      serviceTier?: string | null;
+    };
+    if (this.model && threadResponse.model !== this.model) {
+      throw new Error(`Codex started ${threadResponse.model} instead of configured model ${this.model}. MorAssistant stopped rather than silently downgrading.`);
+    }
+    const runtimeEffort = this.reasoningEffort ?? threadResponse.reasoningEffort ?? configuredRuntime.reasoningEffort;
+    const runtime: CodexRuntimeStatus = {
+      ...(this.model ? { configuredModel: this.model } : {}),
+      model: threadResponse.model,
+      modelProvider: threadResponse.modelProvider,
+      ...(runtimeEffort ? { reasoningEffort: runtimeEffort } : {}),
+      ...(threadResponse.serviceTier ? { serviceTier: threadResponse.serviceTier } : {}),
+      available: true
+    };
 
     const featureTreeWithHashes = inspection.featureTree.features
       .map((feature) => ({ ...feature, featureHash: featureFingerprint(feature) }));
@@ -435,6 +502,7 @@ export class CodexWorker {
         return {
           plan,
           attempts: attempt,
+          runtime,
           inspection: {
             featureCount: inspection.featureTree.features.length,
             dependencyCount: inspection.dependencies.reduce((count, node) => count + node.dependsOn.length, 0),
@@ -465,6 +533,7 @@ export class CodexWorkerPool {
   constructor(
     private readonly root: string,
     private readonly model?: string,
+    private readonly reasoningEffort?: string,
     private readonly command = "codex",
     private readonly maxWorkers = 4,
     private readonly idleTimeoutMs = 15 * 60_000
@@ -477,7 +546,7 @@ export class CodexWorkerPool {
       if (this.workers.size >= this.maxWorkers) {
         throw new Error("Codex worker capacity is temporarily full. Try again in a few minutes.");
       }
-      const worker = new CodexWorker(resolve(this.root, key), this.model, this.command);
+      const worker = new CodexWorker(resolve(this.root, key), this.model, this.reasoningEffort, this.command);
       entry = { worker, idleTimer: this.idleTimer(key, worker) };
       this.workers.set(key, entry);
     } else {

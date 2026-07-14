@@ -8,6 +8,7 @@
   <img alt="Node 22 or newer" src="https://img.shields.io/badge/node-%E2%89%A522-187A5A.svg" />
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-strict-3178C6.svg" />
   <img alt="Onshape integrated cloud app" src="https://img.shields.io/badge/Onshape-integrated%20cloud%20app-187A5A.svg" />
+  <img alt="GPT-5.6 Sol pinned at high reasoning" src="https://img.shields.io/badge/Codex-GPT--5.6%20Sol%20%C2%B7%20high-111827.svg" />
 </p>
 
 <p align="center">
@@ -40,6 +41,12 @@ MorAssistant is a free, open-source **Onshape right-panel copilot** powered by C
 
 > [!IMPORTANT]
 > MorAssistant is an installable Onshape application, **not a standalone CAD website**. The Netlify page is the iframe UI used by Onshape; the persistent API is the trusted boundary that owns OAuth, validates plans, and applies approved operations.
+
+The personal deployment pins **GPT‑5.6 Sol at high reasoning effort**, verifies the model exposed by the signed-in Codex runtime, displays that proof in the panel, and refuses to plan if Codex attempts to fall back to a different model.
+
+### What “Adam-like” means here
+
+The agent operates on the model’s real feature history, not on a screenshot and not by hallucinating CAD JSON. Sol chooses from a typed CAD vocabulary; deterministic builders compile common intent into native Onshape features; the trusted host checks dependencies and regeneration after every operation. The raw-feature route remains an escape hatch for less common Part Studio features, not the default for basic geometry.
 
 ### Why it is different
 
@@ -113,7 +120,11 @@ The complete Developer Portal configuration and private-install test are in [doc
 | Evaluate FeatureScript for geometry analysis | ✅ | Read-only lambda evaluation; no persistent mutation |
 | Self-correct an invalid generated plan | ✅ | Up to three schema + live feature-tree validation passes |
 | Create rectangle and square sketches on Top | ✅ | Typed millimeter geometry, unique names, captured v15 payload fixture |
-| Create any standard native Part Studio feature | ✅ Beta | Bounded BTM payload, ordered feature-name references, current Onshape API validation |
+| Create circle sketches on Top | ✅ | Native v16 circle payload with millimeter-to-meter conversion |
+| Build cylinders and blind extrudes | ✅ | Typed `NEW`, `ADD`, `REMOVE`, and `INTERSECT` solid operations |
+| Cut round holes and pockets | ✅ | Circle + guarded `REMOVE` extrude recipe |
+| Fillet feature-created edges | ✅ | FeatureScript resolves live edge transient IDs, then native fillet input is regenerated and verified |
+| Create other standard native Part Studio features | 🧪 Fallback | Bounded BTM payload, ordered feature-name references, current Onshape API validation |
 | Replace a complete existing feature | ✅ Beta | Exact SHA-256 snapshot match plus microversion guard |
 | Delete an existing feature | ✅ | Exact ID/name match, high-risk preview, explicit approval |
 | Rename existing features | ✅ | Exact feature ID and current-name match |
@@ -126,7 +137,9 @@ The complete Developer Portal configuration and private-install test are in [doc
 | Edit dimensions in custom configurations | Refused | Renames remain available; ambiguous configured edits fail closed |
 | Assemblies, drawings, releases, and document administration | Roadmap | The current extension is intentionally scoped to the active Part Studio |
 
-Common operations use dedicated typed builders. Everything else in the active Part Studio can use the bounded native-feature fallback: Codex proposes the exact payload, the panel labels it as a native operation, the API validates its structure and references, and Onshape performs final feature validation after approval. Assemblies, drawings, release workflows, and persistent custom FeatureScript definitions need their own element-specific APIs and are not silently treated as Part Studio operations.
+Common operations use dedicated typed builders. For a cylinder, Sol emits a circle sketch and an extrude—not an opaque blob. For a round hole, it emits the same profile plus a `REMOVE` extrude. Fillets add one read-only FeatureScript selection pass because Onshape’s native Feature API requires current edge transient IDs; those IDs are resolved immediately before the guarded mutation.
+
+Everything else in the active Part Studio can use the bounded native-feature fallback: Codex proposes the exact payload, the panel labels it as a native operation, the API validates its structure and references, and Onshape performs final feature validation after approval. Assemblies, drawings, release workflows, and persistent custom FeatureScript definitions need their own element-specific APIs and are not silently treated as Part Studio operations.
 
 For the detailed data flow, trust boundaries, state machine, and failure behavior, read **[Architecture: how MorAssistant reasons and recovers →](docs/architecture.md)**.
 
@@ -160,6 +173,7 @@ The model never receives an Onshape OAuth token, never sends arbitrary REST requ
 - **Preview before mutation** — creating a plan and applying it are separate endpoints.
 - **Timeout-resistant planning** — the panel starts a background planning job and polls it, so a long Codex turn never depends on a CDN request timeout.
 - **Strict structured output** — Codex output is normalized and parsed through a closed schema.
+- **Verified model runtime** — the configured Sol model and reasoning effort must exist in the signed-in model catalog; a mismatched thread is stopped before planning.
 - **Bounded self-repair** — invalid generated plans receive precise validator feedback for at most three attempts.
 - **Dependency-aware impact** — direct downstream dependents are surfaced before whole-feature replacement or deletion.
 - **Current-state validation** — feature names, parameter expressions, and Onshape concurrency metadata must still match.
@@ -234,11 +248,12 @@ npm audit --omit=dev
 
 - Onshape OAuth state and token exchange;
 - Codex device-code completion and event-race handling;
+- exact model-catalog verification and high-effort turn pinning;
 - the current Codex app-server sandbox and structured-output protocol;
 - plan validation against a live feature snapshot;
 - dependency, topology, FeatureScript, and mass-property inspection;
 - bounded correction of an initially invalid Codex plan;
-- approval-gated typed and native feature creation, whole-feature replacement, deletion, rename, and dimension mutations;
+- approval-gated circle, rectangle, extrude/cut, fillet, native feature creation, whole-feature replacement, deletion, rename, and dimension mutations;
 - per-operation regeneration inspection, fail-fast execution, and approval-gated recovery planning;
 - stale-plan, replay, and concurrent duplicate-apply rejection;
 - iframe, CORS, request-origin, workspace, configuration, and Onshape-stack guards.

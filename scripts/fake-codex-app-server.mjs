@@ -191,12 +191,42 @@ lines.on("line", (line) => {
         send({ method: "account/login/completed", params: { loginId, success: true, error: null } });
         break;
       }
+      case "model/list":
+        send({
+          id: request.id,
+          result: {
+            data: [{
+              id: "gpt-5.6-sol",
+              model: "gpt-5.6-sol",
+              displayName: "GPT-5.6 Sol",
+              description: "Fake deterministic pipeline model",
+              isDefault: true,
+              hidden: false,
+              defaultReasoningEffort: "medium",
+              supportedReasoningEfforts: ["medium", "high"].map((reasoningEffort) => ({ reasoningEffort, description: reasoningEffort }))
+            }],
+            nextCursor: null
+          }
+        });
+        break;
       case "thread/start": {
         if (request.params?.sandbox !== "read-only") {
           throw new Error("thread/start must use the Codex SandboxMode spelling read-only");
         }
         const id = `thread-${++threadCounter}`;
-        send({ id: request.id, result: { thread: { id } } });
+        send({
+          id: request.id,
+          result: {
+            thread: { id },
+            model: request.params?.model ?? "gpt-5.6-sol",
+            modelProvider: "openai",
+            reasoningEffort: null,
+            serviceTier: null,
+            approvalPolicy: "never",
+            sandbox: { type: "readOnly", networkAccess: false },
+            cwd: request.params?.cwd ?? process.cwd()
+          }
+        });
         break;
       }
       case "turn/start": {
@@ -206,6 +236,7 @@ lines.on("line", (line) => {
         if ("access" in request.params.sandboxPolicy) {
           throw new Error("turn/start must not send the removed readOnly.access field");
         }
+        if (request.params?.effort !== "high") throw new Error("turn/start must pin high reasoning effort");
         const id = `turn-${++turnCounter}`;
         const plan = planFromInput(request.params);
         const item = { type: "agentMessage", id: `message-${id}`, text: JSON.stringify(plan), phase: "final_answer", memoryCitation: null };

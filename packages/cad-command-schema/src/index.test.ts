@@ -49,6 +49,7 @@ describe("CAD plan validation", () => {
     expect(JSON.stringify(CAD_PLAN_JSON_SCHEMA)).not.toContain("oneOf");
     expect(CAD_PLAN_JSON_SCHEMA.properties.requiresApproval).toEqual({ type: "boolean", const: true });
     expect(CAD_PLAN_JSON_SCHEMA.properties.operations.items.properties.type.enum).toContain("create_rectangle_sketch");
+    expect(CAD_PLAN_JSON_SCHEMA.properties.operations.items.properties.type.enum).toContain("fillet_feature_edges");
     const wirePlan = {
       summary: "Rename the base sketch",
       risk: "low",
@@ -149,6 +150,46 @@ describe("CAD plan validation", () => {
     }));
     expect(validatePlanAgainstFeatureTree(nativePlan, [{ featureId: "s1", name: "Profile" }])).toBe(nativePlan);
     expect(() => validatePlanAgainstFeatureTree(nativePlan, [])).toThrow("unavailable feature Profile");
+  });
+
+  it("validates a typed cylinder and fillet recipe in dependency order", () => {
+    const typedPlan = cadPlanSchema.parse(normalizeCadPlanOutput({
+      summary: "Create and round a cylinder",
+      risk: "medium",
+      operations: [{
+        type: "create_circle_sketch",
+        sketchName: "Cylinder profile",
+        plane: "Top",
+        radiusMm: 12,
+        centerXmm: 40,
+        centerYmm: 0,
+        reason: "Create the circular profile"
+      }, {
+        type: "extrude_sketch",
+        featureName: "Cylinder body",
+        sourceFeatureName: "Cylinder profile",
+        depthMm: 30,
+        operation: "NEW",
+        oppositeDirection: false,
+        symmetric: false,
+        reason: "Create the solid cylinder"
+      }, {
+        type: "fillet_feature_edges",
+        featureName: "Rounded cylinder",
+        targetFeatureName: "Cylinder body",
+        radiusMm: 2,
+        tangentPropagation: true,
+        reason: "Round the edges created by the extrude"
+      }],
+      warnings: [],
+      requiresApproval: true
+    }));
+    expect(validatePlanAgainstFeatureTree(typedPlan, [])).toBe(typedPlan);
+    expect(cadPlanSchema.safeParse({ ...typedPlan, risk: "low" }).success).toBe(false);
+    expect(() => validatePlanAgainstFeatureTree({
+      ...typedPlan,
+      operations: typedPlan.operations.slice(1)
+    }, [])).toThrow("Extrude source Cylinder profile is unavailable");
   });
 
   it("requires high risk for deletion and an exact hash for whole-feature replacement", () => {
