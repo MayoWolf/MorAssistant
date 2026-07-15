@@ -373,7 +373,12 @@ export class CodexWorker {
   ): Promise<string> {
     const reasoningSummaries = new Map<string, string>();
     const emit = (id: string, kind: PlanningProgress["kind"], message: string): void => {
-      const clean = message.replace(/[\u0000-\u001f\u007f]+/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 1_200);
+      const clean = message
+        .replace(/[\u0000-\u001f\u007f]+/gu, " ")
+        .replace(/\*\*/gu, "")
+        .replace(/\s+/gu, " ")
+        .trim()
+        .slice(0, 1_200);
       if (clean) onProgress?.({ id, kind, message: clean, at: Date.now() });
     };
     const listener = (message: RpcResponse): void => {
@@ -382,18 +387,25 @@ export class CodexWorker {
       if (event.threadId !== threadId) return;
       if (message.method === "item/reasoning/summaryTextDelta") {
         const itemId = typeof event.itemId === "string" ? event.itemId : "current";
+        const summaryIndex = typeof event.summaryIndex === "number" ? event.summaryIndex : 0;
+        const summaryId = `${itemId}:${summaryIndex}`;
         const delta = typeof event.delta === "string" ? event.delta : "";
-        const summary = `${reasoningSummaries.get(itemId) ?? ""}${delta}`.slice(-4_000);
-        reasoningSummaries.set(itemId, summary);
-        emit(`reasoning:${itemId}`, "reasoning", summary);
+        const summary = `${reasoningSummaries.get(summaryId) ?? ""}${delta}`.slice(-4_000);
+        reasoningSummaries.set(summaryId, summary);
+        emit(`reasoning:${summaryId}`, "reasoning", summary);
         return;
       }
       if (message.method === "item/started" || message.method === "item/completed") {
         const item = event.item;
         if (!item || typeof item !== "object" || (item as Record<string, unknown>).type !== "webSearch") return;
         const record = item as Record<string, unknown>;
-        const query = typeof record.query === "string" ? record.query : "current sources";
-        const itemId = typeof record.id === "string" ? record.id : query;
+        const action = record.action && typeof record.action === "object"
+          ? record.action as Record<string, unknown>
+          : undefined;
+        const query = [record.query, action?.query, action?.url]
+          .find((value) => typeof value === "string" && value.trim().length > 0) as string | undefined;
+        const detail = query?.trim() ?? "current authoritative sources";
+        const itemId = typeof record.id === "string" ? record.id : detail;
         emit(
           `research:${itemId}`,
           "research",
