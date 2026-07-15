@@ -53,6 +53,7 @@ describe("encrypted persistent session store", () => {
       tokenType: "Bearer"
     };
     session.codexConnected = true;
+    session.codexThreads.set("b".repeat(64), "thread-persistent-test");
     const plan = pendingPlan();
     session.plans.set(plan.id, plan);
     session.partStudioSnapshots.set("a".repeat(64), {
@@ -76,6 +77,7 @@ describe("encrypted persistent session store", () => {
     const restored = second.get("session-1");
     expect(restored?.onshapeTokens?.refreshToken).toBe("sensitive-refresh-token");
     expect(restored?.codexConnected).toBe(true);
+    expect(restored?.codexThreads.get("b".repeat(64))).toBe("thread-persistent-test");
     expect(restored?.plans.get(plan.id)).toMatchObject({ summary: "Rename one feature", status: "pending" });
     expect(restored?.partStudioSnapshots.get("a".repeat(64))).toMatchObject({
       capturedAt: 1_752_400_000_000,

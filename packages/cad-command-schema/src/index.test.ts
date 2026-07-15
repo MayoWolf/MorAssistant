@@ -54,6 +54,8 @@ describe("CAD plan validation", () => {
     expect(CAD_PLAN_JSON_SCHEMA.properties.operations.items.properties.type.enum).toContain("fillet_feature_edges");
     expect(CAD_PLAN_JSON_SCHEMA.properties.operations.items.properties.type.enum).toContain("chamfer_feature_edges");
     expect(CAD_PLAN_JSON_SCHEMA.required).toContain("sources");
+    expect(CAD_PLAN_JSON_SCHEMA.required).toContain("message");
+    expect(CAD_PLAN_JSON_SCHEMA.properties.operations.minItems).toBe(0);
     const wirePlan = {
       summary: "Rename the base sketch",
       risk: "low",
@@ -81,6 +83,19 @@ describe("CAD plan validation", () => {
       requiresApproval: true
     };
     expect(cadPlanSchema.parse(normalizeCadPlanOutput(wirePlan))).toEqual(plan);
+  });
+
+  it("accepts a conversational answer with no CAD mutation", () => {
+    const answer = cadPlanSchema.parse({
+      summary: "Answer the follow-up",
+      message: "The previous turn used a 6 mm depth.",
+      risk: "low",
+      operations: [],
+      warnings: [],
+      sources: [],
+      requiresApproval: true
+    });
+    expect(answer.operations).toEqual([]);
   });
 
   it("accepts only browser-safe research source URLs", () => {

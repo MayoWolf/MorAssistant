@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import type { StoredCadPlan } from "@morassistant/cad-command-schema";
 import type { ConnectionStatus, DeviceCodeLogin, PartStudioContext } from "@morassistant/shared-types";
 
@@ -42,6 +42,13 @@ type PlanJobResponse =
   | { id: string; status: "completed"; progress?: PlanningProgress[]; plan: StoredCadPlan }
   | { id: string; status: "failed"; progress?: PlanningProgress[]; error: string };
 
+type ConversationResponse = {
+  plans: StoredCadPlan[];
+  hasPersistentContext: boolean;
+};
+
+type BusyState = "planning" | "applying" | "recovering" | null;
+
 function contextFromUrl(): PartStudioContext | null {
   const params = new URLSearchParams(location.search);
   const documentId = params.get("documentId") ?? params.get("did");
@@ -63,6 +70,18 @@ function contextFromUrl(): PartStudioContext | null {
     ...(configuration ? { configuration } : {}),
     ...(params.get("server") ? { server: params.get("server")! } : {})
   };
+}
+
+function contextQuery(context: PartStudioContext): string {
+  const params = new URLSearchParams({
+    documentId: context.documentId,
+    workspaceId: context.workspaceId,
+    elementId: context.elementId,
+    workspaceOrVersion: context.workspaceOrVersion ?? "w"
+  });
+  if (context.configuration) params.set("configuration", context.configuration);
+  if (context.server) params.set("server", context.server);
+  return params.toString();
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -165,17 +184,103 @@ function OperationDetail({ operation }: { operation: PlanOperation }) {
   }
 }
 
+function PlanCard({
+  plan,
+  busy,
+  activePlanId,
+  onApply
+}: {
+  plan: StoredCadPlan;
+  busy: BusyState;
+  activePlanId: string | null;
+  onApply: (plan: StoredCadPlan) => void;
+}) {
+  const hasOperations = plan.operations.length > 0;
+  return <section className={`plan ${plan.status}`}>
+    <div className="plan-heading">
+      <div><span className="eyebrow">{hasOperations ? "Proposed plan" : "Answer"}</span><h2>{plan.summary}</h2></div>
+      <span className={`risk ${plan.risk}`}>{hasOperations ? `${plan.risk} risk` : "no change"}</span>
+    </div>
+    <p className="assistant-copy">{plan.message ?? plan.summary}</p>
+    {plan.agentTrace && <div className="agent-trace" aria-label="Model inspection summary">
+      <span><strong>{plan.agentTrace.featureCount}</strong><small>features read</small></span>
+      <span><strong>{plan.agentTrace.capabilityCount ?? "—"}</strong><small>CAD tools learned</small></span>
+      <span><strong>{plan.agentTrace.nativeFeatureTypeCount ?? "—"}</strong><small>live feature types</small></span>
+      <span><strong>{plan.agentTrace.dependencyCount}</strong><small>dependency links</small></span>
+      <span><strong>{plan.agentTrace.geometry.solidBodyCount ?? plan.agentTrace.geometry.partCount ?? "—"}</strong><small>solid bodies</small></span>
+      <span><strong>{plan.agentTrace.planningAttempts}</strong><small>validation pass{plan.agentTrace.planningAttempts === 1 ? "" : "es"}</small></span>
+    </div>}
+    {plan.agentTrace?.runtime && <p className="runtime-proof">
+      {plan.agentTrace.continuedConversation ? "Continued conversation" : "Started conversation"} · <strong>{plan.agentTrace.runtime.model}</strong>
+      {plan.agentTrace.runtime.reasoningEffort ? ` · ${plan.agentTrace.runtime.reasoningEffort} reasoning` : ""}
+    </p>}
+    {hasOperations && <ol className="operations">
+      {plan.operations.map((operation, index) => <li key={`${operation.type}-${index}`}>
+        <span className="op-index">{String(index + 1).padStart(2, "0")}</span>
+        <div>
+          <strong>{operationTitle(operation)}</strong>
+          <OperationDetail operation={operation} />
+          <small>{operation.reason}</small>
+        </div>
+        {plan.result?.operations[index] && <span className={`op-status ${plan.result.operations[index].status}`}>{plan.result.operations[index].status === "applied" ? "✓" : "!"}</span>}
+      </li>)}
+    </ol>}
+    {plan.warnings.length > 0 && <div className="warnings">{plan.warnings.map((warning) => <p key={warning}>△ {warning}</p>)}</div>}
+    {(plan.sources?.length ?? 0) > 0 && <div className="research-sources"><strong>Research sources</strong>{plan.sources.map((source) =>
+      <a key={source.url} href={source.url} target="_blank" rel="noreferrer"><span>↗</span><span>{source.title}</span></a>
+    )}</div>}
+    {plan.result?.regenerationErrors.length ? <div className="warnings error-list">{plan.result.regenerationErrors.map((item) => <p key={item.featureId}>! {item.featureName}: {item.message ?? item.status}</p>)}</div> : null}
+    {plan.result?.preexistingRegenerationErrors?.length ? <div className="existing-errors"><p>{plan.result.preexistingRegenerationErrors.length} pre-existing model error(s) were recorded separately and did not fail this plan.</p></div> : null}
+    <div className="approval-bar">
+      <div><strong>{!hasOperations ? "Answered" : plan.status === "pending" ? "Ready for review" : plan.status === "applied" ? "Changes applied" : "Execution stopped"}</strong><small>{!hasOperations ? "No CAD change was proposed." : plan.status === "pending" ? "Onshape can undo applied edits." : `${plan.result?.operations.filter((item) => item.status === "applied").length ?? 0} operation(s) applied.`}</small></div>
+      {hasOperations && plan.status === "pending" && <button className="apply-button" onClick={() => onApply(plan)} disabled={busy !== null}>{busy === "applying" && activePlanId === plan.id ? "Applying…" : "Approve & apply"}</button>}
+    </div>
+  </section>;
+}
+
+function ConversationTurn({
+  plan,
+  latest,
+  busy,
+  activePlanId,
+  onApply
+}: {
+  plan: StoredCadPlan;
+  latest: boolean;
+  busy: BusyState;
+  activePlanId: string | null;
+  onApply: (plan: StoredCadPlan) => void;
+}) {
+  const prompt = plan.recoveryForPlanId ? "Recover from the stopped execution." : plan.prompt;
+  return <article className="chat-turn">
+    <div className="user-message"><span>You</span><p>{prompt}</p></div>
+    <div className="assistant-message">
+      <div className="assistant-label"><BrandMark /><span>Sol</span></div>
+      {latest ? <PlanCard plan={plan} busy={busy} activePlanId={activePlanId} onApply={onApply} /> :
+        <details className="past-turn">
+          <summary><span>{plan.message ?? plan.summary}</span><small>{plan.operations.length === 0 ? "Answer" : `${plan.operations.length} operation${plan.operations.length === 1 ? "" : "s"}`} · {plan.status}</small></summary>
+          <PlanCard plan={plan} busy={busy} activePlanId={activePlanId} onApply={onApply} />
+        </details>}
+    </div>
+  </article>;
+}
+
 export function App() {
   const context = useMemo(contextFromUrl, []);
   const [status, setStatus] = useState<ConnectionStatus | null>(null);
   const [deviceLogin, setDeviceLogin] = useState<DeviceCodeLogin | null>(null);
   const [prompt, setPrompt] = useState("");
-  const [plan, setPlan] = useState<StoredCadPlan | null>(null);
+  const [history, setHistory] = useState<StoredCadPlan[]>([]);
+  const [hasPersistentContext, setHasPersistentContext] = useState(false);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
   const [activity, setActivity] = useState<PlanningProgress[]>([]);
-  const [busy, setBusy] = useState<"planning" | "applying" | "recovering" | null>(null);
+  const [busy, setBusy] = useState<BusyState>(null);
+  const [activePlanId, setActivePlanId] = useState<string | null>(null);
   const [recoveryMessage, setRecoveryMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const conversationEnd = useRef<HTMLDivElement | null>(null);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -202,6 +307,33 @@ export function App() {
     };
   }, [refreshStatus]);
 
+  useEffect(() => {
+    if (!context) return;
+    let active = true;
+    void api<ConversationResponse>(`/api/conversation?${contextQuery(context)}`).then((conversation) => {
+      if (!active) return;
+      setHistory(conversation.plans);
+      setHasPersistentContext(conversation.hasPersistentContext);
+      setHistoryLoaded(true);
+    }).catch((cause) => {
+      if (!active) return;
+      setError(cause instanceof Error ? cause.message : "Could not load the conversation.");
+      setHistoryLoaded(true);
+    });
+    return () => { active = false; };
+  }, [context]);
+
+  useEffect(() => {
+    conversationEnd.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [history.length, pendingPrompt, activity]);
+
+  const upsertPlan = (nextPlan: StoredCadPlan) => {
+    setHistory((current) => {
+      const withoutPlan = current.filter((item) => item.id !== nextPlan.id);
+      return [...withoutPlan, nextPlan].sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
+    });
+  };
+
   const connectCodex = async () => {
     setError(null);
     try {
@@ -216,34 +348,39 @@ export function App() {
   const createPlan = async (event: FormEvent) => {
     event.preventDefault();
     if (!context || !prompt.trim()) return;
-    setBusy("planning"); setError(null); setPlan(null); setRecoveryMessage(null); setActivity([]);
+    const submittedPrompt = prompt.trim();
+    setBusy("planning"); setError(null); setRecoveryMessage(null); setActivity([]); setPendingPrompt(submittedPrompt); setPrompt("");
     try {
       const job = await api<PlanJobResponse>("/api/plan-jobs", {
         method: "POST",
-        body: JSON.stringify({ prompt, context })
+        body: JSON.stringify({ prompt: submittedPrompt, context })
       });
       setActivity(job.progress ?? []);
-      setPlan(job.status === "completed" ? job.plan : await waitForPlan(job.id, setActivity));
+      const completedPlan = job.status === "completed" ? job.plan : await waitForPlan(job.id, setActivity);
+      upsertPlan(completedPlan);
+      setHasPersistentContext(true);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not create a plan.");
+      setPrompt((current) => current || submittedPrompt);
     } finally {
+      setPendingPrompt(null);
       setBusy(null);
     }
   };
 
-  const applyPlan = async () => {
-    if (!plan) return;
-    setBusy("applying"); setError(null);
+  const applyPlan = async (plan: StoredCadPlan) => {
+    setBusy("applying"); setActivePlanId(plan.id); setError(null);
     try {
       const applied = await api<StoredCadPlan>(`/api/plans/${plan.id}/apply`, { method: "POST" });
-      setPlan(applied);
+      upsertPlan(applied);
       if (applied.status === "failed" && !applied.recoveryForPlanId) {
         setBusy("recovering");
+        setPendingPrompt("Recover from the stopped execution.");
         setActivity([]);
         const job = await api<PlanJobResponse>(`/api/plans/${applied.id}/recovery-jobs`, { method: "POST" });
         setActivity(job.progress ?? []);
         const recovery = job.status === "completed" ? job.plan : await waitForPlan(job.id, setActivity);
-        setPlan(recovery);
+        upsertPlan(recovery);
         const appliedCount = applied.result?.operations.filter((item) => item.status === "applied").length ?? 0;
         const stoppedAt = applied.result?.operations.find((item) => item.status === "failed" || item.verification !== "passed");
         setRecoveryMessage([
@@ -255,17 +392,13 @@ export function App() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not apply the plan.");
     } finally {
+      setPendingPrompt(null);
+      setActivePlanId(null);
       setBusy(null);
     }
   };
 
-  const updatePrompt = (value: string) => {
-    setPrompt(value);
-    if (plan?.status === "pending") {
-      setPlan(null);
-      setRecoveryMessage(null);
-    }
-  };
+  const updatePrompt = (value: string) => setPrompt(value);
 
   const handlePromptKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
@@ -315,69 +448,56 @@ export function App() {
       <a href={deviceLogin.verificationUrl} target="_blank" rel="noreferrer">Open verification page ↗</a>
     </section>}
 
-    <section className="workspace">
-      <div className="section-title"><span className="eyebrow">Describe the change</span><span className="safe-label">Preview first</span></div>
+    {(error || statusError) && <section className="notice error" role="alert"><strong>Something needs attention</strong><p>{error ?? statusError}</p></section>}
+    {recoveryMessage && <section className="notice recovery"><strong>Recovery plan ready</strong><p>{recoveryMessage}</p></section>}
+    <section className="chat-shell" aria-label="Part Studio conversation">
+      <div className="chat-meta">
+        <div><span className="eyebrow">Part Studio chat</span><strong>{history.length} turn{history.length === 1 ? "" : "s"}</strong></div>
+        <span className={hasPersistentContext ? "memory-on" : "memory-new"}><i />{hasPersistentContext ? "Context active" : "New context"}</span>
+      </div>
+      {!historyLoaded && <div className="chat-empty"><BrandMark /><strong>Loading conversation…</strong></div>}
+      {historyLoaded && history.length === 0 && !pendingPrompt && <div className="chat-empty">
+        <BrandMark />
+        <strong>Build with Sol, one conversation at a time.</strong>
+        <p>Ask for a part, then keep refining it: “make it wider,” “add four mounting holes,” or “now fillet those edges.” Sol keeps the thread and re-reads the live model every turn.</p>
+      </div>}
+      {history.map((item, index) => <ConversationTurn
+        key={item.id}
+        plan={item}
+        latest={index === history.length - 1}
+        busy={busy}
+        activePlanId={activePlanId}
+        onApply={(candidate) => void applyPlan(candidate)}
+      />)}
+      {pendingPrompt && <article className="chat-turn pending-turn">
+        <div className="user-message"><span>You</span><p>{pendingPrompt}</p></div>
+        <div className="assistant-message">
+          <div className="assistant-label"><BrandMark /><span>Sol</span></div>
+          <LiveActivity progress={activity} label={busy === "recovering" ? "Preparing a recovery plan" : "Continuing the conversation"} />
+        </div>
+      </article>}
+      <div ref={conversationEnd} />
+    </section>
+
+    <section className="workspace composer">
+      <div className="section-title"><span className="eyebrow">Message Sol</span><span className="safe-label">Same Part Studio context</span></div>
       <form onSubmit={(event) => void createPlan(event)}>
         <textarea
           value={prompt}
           onChange={(event) => updatePrompt(event.target.value)}
           onKeyDown={handlePromptKeyDown}
-          placeholder="Describe any real-world part, current rule, or CAD change—Sol can research it and build a plan…"
-          rows={5}
+          placeholder={history.length ? "Keep going… make it larger, move it, add holes, or ask why." : "Describe what you want to build or change…"}
+          rows={4}
           disabled={!ready || busy !== null}
         />
         <div className="prompt-footer">
-          <span>{context ? "Current Part Studio" : "No Part Studio context"}</span>
+          <span>{hasPersistentContext ? "Using conversation memory" : context ? "Current Part Studio" : "No Part Studio context"}</span>
           <button type="submit" disabled={!ready || prompt.trim().length < 3 || busy !== null}>
-            {busy === "planning" ? "Planning…" : "Create plan"}<span>⌘/Ctrl ↵</span>
+            {busy === "planning" ? "Thinking…" : "Send"}<span>⌘/Ctrl ↵</span>
           </button>
         </div>
       </form>
     </section>
-
-    {(error || statusError) && <section className="notice error" role="alert"><strong>Something needs attention</strong><p>{error ?? statusError}</p></section>}
-    {recoveryMessage && <section className="notice recovery"><strong>Recovery plan ready</strong><p>{recoveryMessage}</p></section>}
-    {(busy === "planning" || busy === "recovering") && <LiveActivity progress={activity} label={busy === "recovering" ? "Preparing a recovery plan" : "Researching and creating the plan"} />}
-
-    {plan && <section className={`plan ${plan.status}`}>
-      <div className="plan-heading">
-        <div><span className="eyebrow">Proposed plan</span><h2>{plan.summary}</h2></div>
-        <span className={`risk ${plan.risk}`}>{plan.risk} risk</span>
-      </div>
-      {plan.agentTrace && <div className="agent-trace" aria-label="Model inspection summary">
-        <span><strong>{plan.agentTrace.featureCount}</strong><small>features read</small></span>
-        <span><strong>{plan.agentTrace.capabilityCount ?? "—"}</strong><small>CAD tools learned</small></span>
-        <span><strong>{plan.agentTrace.nativeFeatureTypeCount ?? "—"}</strong><small>live feature types</small></span>
-        <span><strong>{plan.agentTrace.dependencyCount}</strong><small>dependency links</small></span>
-        <span><strong>{plan.agentTrace.geometry.solidBodyCount ?? plan.agentTrace.geometry.partCount ?? "—"}</strong><small>solid bodies</small></span>
-        <span><strong>{plan.agentTrace.planningAttempts}</strong><small>validation pass{plan.agentTrace.planningAttempts === 1 ? "" : "es"}</small></span>
-      </div>}
-      {plan.agentTrace?.runtime && <p className="runtime-proof">
-        Planned by <strong>{plan.agentTrace.runtime.model}</strong>
-        {plan.agentTrace.runtime.reasoningEffort ? ` · ${plan.agentTrace.runtime.reasoningEffort} reasoning` : ""}
-      </p>}
-      <ol className="operations">
-        {plan.operations.map((operation, index) => <li key={`${operation.type}-${index}`}>
-          <span className="op-index">{String(index + 1).padStart(2, "0")}</span>
-          <div>
-            <strong>{operationTitle(operation)}</strong>
-            <OperationDetail operation={operation} />
-            <small>{operation.reason}</small>
-          </div>
-          {plan.result?.operations[index] && <span className={`op-status ${plan.result.operations[index].status}`}>{plan.result.operations[index].status === "applied" ? "✓" : "!"}</span>}
-        </li>)}
-      </ol>
-      {plan.warnings.length > 0 && <div className="warnings">{plan.warnings.map((warning) => <p key={warning}>△ {warning}</p>)}</div>}
-      {(plan.sources?.length ?? 0) > 0 && <div className="research-sources"><strong>Research sources</strong>{plan.sources.map((source) =>
-        <a key={source.url} href={source.url} target="_blank" rel="noreferrer"><span>↗</span><span>{source.title}</span></a>
-      )}</div>}
-      {plan.result?.regenerationErrors.length ? <div className="warnings error-list">{plan.result.regenerationErrors.map((item) => <p key={item.featureId}>! {item.featureName}: {item.message ?? item.status}</p>)}</div> : null}
-      {plan.result?.preexistingRegenerationErrors?.length ? <div className="existing-errors"><p>{plan.result.preexistingRegenerationErrors.length} pre-existing model error(s) were recorded separately and did not fail this plan.</p></div> : null}
-      <div className="approval-bar">
-        <div><strong>{plan.status === "pending" ? "Ready for review" : plan.status === "applied" ? "Changes applied" : "Execution stopped"}</strong><small>{plan.status === "pending" ? "Onshape can undo applied edits." : `${plan.result?.operations.filter((item) => item.status === "applied").length ?? 0} operation(s) applied.`}</small></div>
-        {plan.status === "pending" && <button className="apply-button" onClick={() => void applyPlan()} disabled={busy !== null}>{busy === "applying" ? "Applying…" : "Approve & apply"}</button>}
-      </div>
-    </section>}
 
     <footer><span className="shield">◇</span> No CAD change runs without approval</footer>
   </main>;

@@ -234,6 +234,32 @@ describe("installed Onshape extension pipeline", () => {
     });
     expect(replay.status).toBe(409);
 
+    const conversationAnswerResponse = await fetch(`${appOrigin}/api/plans`, {
+      method: "POST",
+      headers: sessionHeaders({ origin: appOrigin, "content-type": "application/json" }),
+      body: JSON.stringify({ prompt: "What did we just change?", context })
+    });
+    expect(conversationAnswerResponse.status).toBe(201);
+    expect(await conversationAnswerResponse.json()).toMatchObject({
+      status: "applied",
+      operations: [],
+      message: expect.stringMatching(/retained \d+ earlier turns/i),
+      agentTrace: { continuedConversation: true }
+    });
+
+    const conversationQuery = new URLSearchParams({
+      documentId: context.documentId,
+      workspaceId: context.workspaceId,
+      elementId: context.elementId,
+      workspaceOrVersion: context.workspaceOrVersion,
+      server: context.server
+    });
+    const conversation = await fetch(`${appOrigin}/api/conversation?${conversationQuery}`, {
+      headers: sessionHeaders()
+    }).then((response) => response.json()) as { hasPersistentContext?: boolean; plans?: Array<{ prompt?: string }> };
+    expect(conversation.hasPersistentContext).toBe(true);
+    expect(conversation.plans?.some((entry) => entry.prompt === "What did we just change?")).toBe(true);
+
     const secondPlanResponse = await fetch(`${appOrigin}/api/plans`, {
       method: "POST",
       headers: sessionHeaders({ origin: appOrigin, "content-type": "application/json" }),

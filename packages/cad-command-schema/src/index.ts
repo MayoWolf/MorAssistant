@@ -226,8 +226,9 @@ export const researchSourceSchema = z.object({
 
 export const cadPlanSchema = z.object({
   summary: z.string().min(1).max(500),
+  message: z.string().min(1).max(2_000).optional(),
   risk: z.enum(["low", "medium", "high"]),
-  operations: z.array(cadOperationSchema).min(1).max(25),
+  operations: z.array(cadOperationSchema).max(25),
   warnings: z.array(z.string().max(500)).max(10),
   sources: z.array(researchSourceSchema).max(12).default([]),
   requiresApproval: z.literal(true)
@@ -283,6 +284,7 @@ export interface StoredCadPlan extends CadPlan {
   createdAt: string;
   agentTrace?: {
     planningAttempts: number;
+    continuedConversation?: boolean;
     runtime?: {
       configuredModel?: string;
       model: string;
@@ -340,13 +342,14 @@ export interface RegenerationError {
 export const CAD_PLAN_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["summary", "risk", "operations", "warnings", "sources", "requiresApproval"],
+  required: ["summary", "message", "risk", "operations", "warnings", "sources", "requiresApproval"],
   properties: {
     summary: { type: "string", minLength: 1, maxLength: 500 },
+    message: { type: "string", minLength: 1, maxLength: 2_000, description: "Natural conversational response to display before any proposed CAD operations." },
     risk: { type: "string", enum: ["low", "medium", "high"] },
     operations: {
       type: "array",
-      minItems: 1,
+      minItems: 0,
       maxItems: 25,
       items: {
         type: "object",

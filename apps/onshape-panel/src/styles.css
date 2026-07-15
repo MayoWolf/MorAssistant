@@ -20,6 +20,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
 
 main { min-height: 100vh; padding: 0 18px 22px; }
 header {
+  position: sticky; top: 0; z-index: 10;
   height: 70px;
   margin: 0 -18px 18px;
   padding: 0 18px;
@@ -76,6 +77,8 @@ h1 { margin: 5px 0 7px; font-size: 20px; line-height: 1.25; letter-spacing: -.04
 .device-card a { color: var(--lime); font-size: 10px; font-weight: 700; text-decoration: none; }
 
 .workspace { padding-top: 4px; }
+.composer { position: sticky; bottom: 0; z-index: 9; margin: 0 -8px; padding: 10px 8px 8px; background: linear-gradient(to bottom, rgba(243,245,241,0), #f3f5f1 15%, #f3f5f1); }
+.composer textarea { min-height: 86px; }
 .section-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .safe-label { color: var(--muted); font-size: 9px; }
 form { overflow: hidden; border: 1px solid #cfd5cf; border-radius: 12px; background: var(--paper); transition: border-color .2s, box-shadow .2s; }
@@ -97,6 +100,37 @@ textarea:disabled { cursor: not-allowed; }
 .notice p { margin: 3px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .notice.error { border-left-color: var(--red); }
 .notice.recovery { border-left-color: var(--green); background: #f1f8f4; }
+
+.chat-shell { display: grid; gap: 18px; margin: 0 -4px 14px; padding: 0 4px 8px; }
+.chat-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 2px 8px; border-bottom: 1px solid var(--line); }
+.chat-meta > div { display: flex; flex-direction: column; gap: 2px; }
+.chat-meta > div > strong { font-size: 11px; }
+.chat-meta > span { display: inline-flex; align-items: center; gap: 5px; padding: 5px 7px; color: #527064; background: #eaf4ee; border-radius: 999px; font-size: 8px; font-weight: 700; }
+.chat-meta > span i { width: 6px; height: 6px; border-radius: 50%; background: #2ca779; }
+.chat-meta > span.memory-new { color: #76643b; background: #f6efd9; }
+.chat-meta > span.memory-new i { background: #d3a43b; }
+.chat-empty { display: grid; justify-items: center; gap: 8px; padding: 28px 20px; color: #52615b; text-align: center; border: 1px dashed #cad5ce; border-radius: 16px; background: rgba(251,252,249,.68); }
+.chat-empty svg { width: 36px; color: var(--green); }
+.chat-empty strong { font-size: 13px; }
+.chat-empty p { max-width: 310px; margin: 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.chat-turn { display: grid; gap: 10px; }
+.user-message { justify-self: end; max-width: 88%; }
+.user-message > span { display: block; margin: 0 7px 4px; color: #7c8581; font-size: 8px; font-weight: 700; text-align: right; text-transform: uppercase; letter-spacing: .1em; }
+.user-message p { margin: 0; padding: 10px 12px; color: #143b2e; background: #dff1e7; border: 1px solid #c5e3d2; border-radius: 14px 14px 4px 14px; font-size: 11px; line-height: 1.55; white-space: pre-wrap; }
+.assistant-message { min-width: 0; }
+.assistant-label { display: flex; align-items: center; gap: 5px; margin: 0 7px 5px; color: #476158; font-size: 8px; font-weight: 800; text-transform: uppercase; letter-spacing: .1em; }
+.assistant-label svg { width: 16px; height: 16px; color: var(--green); }
+.assistant-message .plan, .assistant-message .live-activity { margin-bottom: 0; }
+.assistant-copy { margin: 0; padding: 0 16px 13px; color: #3f4d48; font-size: 10px; line-height: 1.62; }
+.past-turn { overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: var(--paper); }
+.past-turn > summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px; padding: 12px 14px; cursor: pointer; list-style: none; }
+.past-turn > summary::-webkit-details-marker { display: none; }
+.past-turn > summary::after { content: "＋"; grid-area: 1 / 2 / 3 / 3; align-self: center; color: var(--green); font-size: 13px; }
+.past-turn[open] > summary::after { content: "−"; }
+.past-turn > summary > span { min-width: 0; overflow: hidden; font-size: 10px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+.past-turn > summary > small { color: var(--muted); font-size: 8px; text-transform: capitalize; }
+.past-turn > .plan { border: 0; border-top: 1px solid var(--line); border-radius: 0; box-shadow: none; }
+.pending-turn .user-message { opacity: .82; }
 
 .live-activity {
   overflow: hidden; border: 1px solid #b9d7c9; border-radius: 14px; background: #f8fbf8;

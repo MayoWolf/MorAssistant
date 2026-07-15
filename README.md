@@ -33,13 +33,14 @@
 
 ## AI CAD, without the leap of faith
 
-MorAssistant is a free, open-source **Onshape right-panel copilot** powered by Codex. It lives beside the feature tree—like other native Onshape integrations—so the workflow stays inside the Part Studio:
+MorAssistant is a free, open-source **Onshape right-panel copilot** powered by Codex. It lives beside the feature tree—like other native Onshape integrations—and now behaves as a persistent Part Studio chat rather than a one-shot prompt box:
 
 1. describe the change in plain language;
 2. receive a small, structured plan tied to the current feature IDs and values;
 3. review every proposed operation;
 4. select **Approve & apply**;
-5. keep Onshape Undo available as the familiar escape hatch.
+5. keep talking in the same thread—“make it wider,” “move those holes,” or “now fillet it”;
+6. keep Onshape Undo available as the familiar escape hatch.
 
 > [!IMPORTANT]
 > MorAssistant is an installable Onshape application, **not a standalone CAD website**. The Netlify page is the iframe UI used by Onshape; the persistent API is the trusted boundary that owns OAuth, validates plans, and applies approved operations.
@@ -48,7 +49,9 @@ The personal deployment pins **GPT‑5.6 Sol at high reasoning effort**, verifie
 
 ### What “Adam-like” means here
 
-The agent operates on the model’s real feature history, not on a screenshot and not by hallucinating CAD JSON. Sol chooses from a typed CAD vocabulary; deterministic builders compile common intent into native Onshape features; the trusted host checks dependencies and regeneration after every operation. The raw-feature route remains an escape hatch for less common Part Studio features, not the default for basic geometry.
+Each Part Studio has its own durable Codex conversation. The visible transcript survives panel reloads, the underlying app-server thread survives backend restarts, and follow-up turns retain names, dimensions, corrections, and design intent. Before every new reply, MorAssistant still re-reads the live feature tree so conversation memory never overrides the actual CAD state. If a saved Codex rollout cannot be reopened, the backend seeds a replacement thread from the recent encrypted transcript.
+
+The agent operates on the model’s real feature history, not on a screenshot and not by hallucinating CAD JSON. Sol chooses from a typed CAD vocabulary; deterministic builders compile common intent into native Onshape features; the trusted host checks dependencies and regeneration after every operation. The raw-feature route remains an escape hatch for less common Part Studio features, not the default for basic geometry. Informational follow-ups can return a normal chat answer with no CAD operations and no approval button.
 
 ### Why it is different
 
@@ -90,6 +93,7 @@ The model context is deliberately CAD-shaped:
 | Live feature specs | Exact feature types and parameter definitions returned by the active Part Studio | Adapts to the current Onshape release and installed custom FeatureScript tools |
 | Live web research | Current primary sources for season rules, standards, products, and physical dimensions | Grounds requests such as the 2026 FRC season or regulation sports equipment in verifiable facts |
 | Live activity | Detailed reasoning summaries, web-search activity, inspection, and validation state | Replaces an opaque loading animation without exposing private chain-of-thought |
+| Conversation context | Persistent Codex thread plus the visible prompt/plan transcript for this Part Studio | Makes “it,” “those,” “the last sketch,” and other follow-ups refer to earlier turns |
 
 Read-only geometric analysis uses Onshape's FeatureScript evaluation API. Persistent changes use Onshape's native Feature API, so the result remains editable, ordered, parametric CAD. Invalid model output is not merely rejected: the validation failure is fed back into the same planning thread for up to three bounded repair passes.
 
@@ -131,6 +135,8 @@ MorAssistant now uses two complementary knowledge layers. The versioned **177-to
 | Evaluate FeatureScript for geometry analysis | ✅ | Read-only lambda evaluation; no persistent mutation |
 | Research current real-world facts | ✅ | First-party live web search, primary-source preference, source links in every researched preview |
 | Show planning progress live | ✅ | Detailed reasoning summaries plus inspection, research, and trusted-validation events; raw private reasoning is never exposed |
+| Continue a Part Studio conversation | ✅ | Durable app-server thread per Part Studio, encrypted thread mapping, reloadable transcript, and live-model refresh on every turn |
+| Answer without changing CAD | ✅ | Natural assistant response with an empty operation list and no apply action |
 | Self-correct an invalid generated plan | ✅ | Up to three schema + live feature-tree validation passes |
 | Create rectangle, square, and circle sketches in 3D | ✅ | Typed Top, Front, and Right datum-plane geometry with explicit world-axis mapping |
 | Build cylinders and blind/offset extrudes | ✅ | Typed `NEW`, `ADD`, `REMOVE`, and `INTERSECT` operations with direction, symmetry, and starting offset |

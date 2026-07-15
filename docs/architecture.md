@@ -8,6 +8,8 @@ The central rule is simple:
 
 > The model may propose. The trusted host validates. The designer approves. Onshape decides whether the CAD rebuilds.
 
+Each user and Part Studio pair also owns one persistent Codex app-server thread. The encrypted session stores only the thread identifier and visible CAD-plan transcript; Codex rollout history stays in that user's isolated, persistent `CODEX_HOME`. Panel reloads restore the transcript, backend restarts resume the same thread, and the live Part Studio snapshot is appended to every new turn. Conversation context therefore carries intent while Onshape remains the authority on current geometry.
+
 ## System map
 
 ```mermaid
@@ -108,6 +110,8 @@ stateDiagram-v2
 ```
 
 The same planning thread gets exact trusted-host feedback and the complete model snapshot again. Repair is bounded to three total attempts. A malformed or stale plan never becomes a preview, and a planning loop cannot run indefinitely.
+
+The thread remains open after a successful turn. Follow-up language can refer to earlier choices and results, and answer-only turns may return a conversational message with zero operations. If the rollout is unavailable, MorAssistant starts a replacement thread seeded with up to twelve recent visible turns instead of silently discarding the conversation.
 
 The operation language currently includes:
 

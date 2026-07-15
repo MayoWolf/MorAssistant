@@ -26,6 +26,7 @@ export interface UserSession {
   onshapeRedirectUri?: string;
   codexLoginId?: string;
   codexConnected?: boolean;
+  codexThreads: Map<string, string>;
   plans: Map<string, StoredCadPlan>;
   partStudioSnapshots: Map<string, PartStudioSnapshot>;
 }
@@ -71,6 +72,7 @@ const persistedSessionSchema = z.object({
   onshapeState: z.string().optional(),
   onshapeRedirectUri: z.string().optional(),
   codexConnected: z.boolean().optional(),
+  codexThreads: z.record(z.string().regex(/^[a-f0-9]{64}$/u), z.string().min(1).max(200)).optional(),
   plans: z.array(persistedPlanSchema),
   partStudioSnapshots: z.array(partStudioSnapshotSchema).max(20).optional()
 }).strict();
@@ -150,6 +152,7 @@ export class SessionStore {
     const session: UserSession = {
       id,
       lastTouchedAt: Date.now(),
+      codexThreads: new Map(),
       plans: new Map(),
       partStudioSnapshots: new Map()
     };
@@ -166,6 +169,7 @@ export class SessionStore {
     const session: UserSession = {
       id,
       lastTouchedAt: row.updated_at,
+      codexThreads: new Map(Object.entries(persisted.codexThreads ?? {})),
       plans: new Map(plans.map((plan) => [plan.id, plan])),
       partStudioSnapshots: new Map((persisted.partStudioSnapshots ?? []).map((snapshot) => [
         snapshot.contextKey,
@@ -186,6 +190,7 @@ export class SessionStore {
       ...(session.onshapeState ? { onshapeState: session.onshapeState } : {}),
       ...(session.onshapeRedirectUri ? { onshapeRedirectUri: session.onshapeRedirectUri } : {}),
       ...(session.codexConnected ? { codexConnected: true } : {}),
+      codexThreads: Object.fromEntries(session.codexThreads),
       plans: [...session.plans.values()],
       partStudioSnapshots: [...session.partStudioSnapshots.values()]
     });

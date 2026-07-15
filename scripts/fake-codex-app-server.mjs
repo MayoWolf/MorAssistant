@@ -8,12 +8,13 @@ if (process.env.ONSHAPE_CLIENT_SECRET || process.env.SESSION_SECRET || process.e
 let connected = false;
 let threadCounter = 0;
 let turnCounter = 0;
+const threads = new Map();
 
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
-function planFromInput(params) {
+function planFromInput(params, earlierTurns = []) {
   const text = params?.input?.find((item) => item?.type === "text")?.text ?? "";
   const marker = "Current Part Studio model snapshot:\n";
   const markerIndex = text.indexOf(marker);
@@ -25,6 +26,16 @@ function planFromInput(params) {
       !model.liveNativeFeatures?.availableFeatureTypes?.some((entry) => entry.featureType === "chamfer") ||
       !model.liveNativeFeatures?.relevantFeatureSpecs?.some((entry) => ["extrude", "newSketch"].includes(entry.featureType))) {
     throw new Error("The fake planner did not receive the complete Onshape curriculum and live feature specifications.");
+  }
+  if (/what did we just|what have we done|summarize (?:our|the) conversation/i.test(userRequest)) {
+    return {
+      summary: "Answer the conversation follow-up",
+      message: `I retained ${earlierTurns.length} earlier turn${earlierTurns.length === 1 ? "" : "s"} in this Part Studio conversation.`,
+      risk: "low",
+      operations: [],
+      warnings: [],
+      requiresApproval: true
+    };
   }
   if (/self-correct/i.test(userRequest) && !/previous proposed plan failed trusted-host validation/i.test(userRequest)) {
     const feature = snapshot[0];
@@ -272,7 +283,30 @@ lines.on("line", (line) => {
         if (!String(request.params?.baseInstructions).includes("Wheel circles therefore belong on the Front plane")) {
           throw new Error("thread/start must teach explicit vehicle coordinate frames and wheel orientation");
         }
+        if (request.params?.ephemeral !== false) {
+          throw new Error("thread/start must persist the conversation rollout");
+        }
         const id = `thread-${++threadCounter}`;
+        threads.set(id, { turns: [] });
+        send({
+          id: request.id,
+          result: {
+            thread: { id },
+            model: request.params?.model ?? "gpt-5.6-sol",
+            modelProvider: "openai",
+            reasoningEffort: null,
+            serviceTier: null,
+            approvalPolicy: "never",
+            sandbox: { type: "readOnly", networkAccess: false },
+            cwd: request.params?.cwd ?? process.cwd()
+          }
+        });
+        break;
+      }
+      case "thread/resume": {
+        const id = request.params?.threadId;
+        if (!threads.has(id)) throw new Error(`Unknown saved thread ${id}`);
+        if (request.params?.config?.web_search !== "live") throw new Error("thread/resume must preserve live web search");
         send({
           id: request.id,
           result: {
@@ -297,8 +331,13 @@ lines.on("line", (line) => {
         }
         if (request.params?.effort !== "high") throw new Error("turn/start must pin high reasoning effort");
         if (request.params?.summary !== "detailed") throw new Error("turn/start must request detailed reasoning summaries");
+        const thread = threads.get(request.params?.threadId);
+        if (!thread) throw new Error("turn/start must target a started or resumed persistent thread");
         const id = `turn-${++turnCounter}`;
-        const plan = { ...planFromInput(request.params), sources: [] };
+        const planned = planFromInput(request.params, thread.turns);
+        const plan = { ...planned, message: planned.message ?? planned.summary, sources: [] };
+        const userText = request.params?.input?.find((entry) => entry?.type === "text")?.text ?? "";
+        thread.turns.push(userText);
         const item = { type: "agentMessage", id: `message-${id}`, text: JSON.stringify(plan), phase: "final_answer", memoryCitation: null };
         send({ id: request.id, result: { turn: { id, status: "inProgress", items: [], error: null } } });
         send({

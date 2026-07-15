@@ -366,7 +366,21 @@ async function createStoredPlan(
   if (!usedStoredSnapshot || !storedSnapshot?.geometry) {
     storePartStudioSnapshot(session, snapshotKey, featureTree, geometryEvidence(rawInspection));
   }
-  const planning = await workers.forUser(session.id).createPlan(body.prompt, inspection, onProgress);
+  const priorTurns = [...session.plans.values()]
+    .filter((candidate) => partStudioSnapshotKey(candidate.context) === snapshotKey)
+    .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt))
+    .slice(-12)
+    .map((candidate) => ({
+      prompt: candidate.prompt,
+      summary: candidate.summary,
+      ...(candidate.message ? { message: candidate.message } : {}),
+      status: candidate.status
+    }));
+  const planning = await workers.forUser(session.id).createPlan(body.prompt, inspection, onProgress, {
+    ...(session.codexThreads.get(snapshotKey) ? { threadId: session.codexThreads.get(snapshotKey)! } : {}),
+    priorTurns
+  });
+  session.codexThreads.set(snapshotKey, planning.threadId);
   const plan = cadPlanSchema.parse(planning.plan);
   validatePlanAgainstIntent(body.prompt, validatePlanAgainstFeatureTree(plan, featuresWithHashes(featureTree.features)));
   if (body.context.configuration && plan.operations.some((operation) => operation.type === "update_dimension")) {
@@ -377,10 +391,11 @@ async function createStoredPlan(
     id: randomUUID(),
     context: body.context,
     prompt: body.prompt,
-    status: "pending",
+    status: plan.operations.length === 0 ? "applied" : "pending",
     createdAt: new Date().toISOString(),
     agentTrace: {
       planningAttempts: planning.attempts,
+      continuedConversation: planning.continuedConversation,
       runtime: {
         ...(planning.runtime.configuredModel ? { configuredModel: planning.runtime.configuredModel } : {}),
         model: planning.runtime.model,
@@ -828,6 +843,20 @@ app.get("/api/features", async (request, reply) => {
       parameters: feature.parameters?.filter((parameter) => typeof parameter.expression === "string")
         .map((parameter) => ({ parameterId: parameter.parameterId, expression: parameter.expression }))
     }))
+  };
+});
+
+app.get("/api/conversation", async (request, reply) => {
+  const session = getSession(request, reply);
+  const context = parseContext(request.query);
+  const contextKey = partStudioSnapshotKey(context);
+  const plans = [...session.plans.values()]
+    .filter((plan) => partStudioSnapshotKey(plan.context) === contextKey)
+    .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt))
+    .slice(-50);
+  return {
+    plans,
+    hasPersistentContext: session.codexThreads.has(contextKey)
   };
 });
 
