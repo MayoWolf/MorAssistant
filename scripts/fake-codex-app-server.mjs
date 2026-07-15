@@ -266,6 +266,9 @@ lines.on("line", (line) => {
         if (request.params?.sandbox !== "read-only") {
           throw new Error("thread/start must use the Codex SandboxMode spelling read-only");
         }
+        if (request.params?.config?.web_search !== "live") {
+          throw new Error("thread/start must enable live first-party web search");
+        }
         if (!String(request.params?.baseInstructions).includes("Wheel circles therefore belong on the Front plane")) {
           throw new Error("thread/start must teach explicit vehicle coordinate frames and wheel orientation");
         }
@@ -293,10 +296,35 @@ lines.on("line", (line) => {
           throw new Error("turn/start must not send the removed readOnly.access field");
         }
         if (request.params?.effort !== "high") throw new Error("turn/start must pin high reasoning effort");
+        if (request.params?.summary !== "detailed") throw new Error("turn/start must request detailed reasoning summaries");
         const id = `turn-${++turnCounter}`;
-        const plan = planFromInput(request.params);
+        const plan = { ...planFromInput(request.params), sources: [] };
         const item = { type: "agentMessage", id: `message-${id}`, text: JSON.stringify(plan), phase: "final_answer", memoryCitation: null };
         send({ id: request.id, result: { turn: { id, status: "inProgress", items: [], error: null } } });
+        send({
+          method: "item/reasoning/summaryTextDelta",
+          params: {
+            threadId: request.params.threadId,
+            turnId: id,
+            itemId: `reasoning-${id}`,
+            delta: "Checking the current feature tree, physical constraints, and relevant real-world dimensions.",
+            summaryIndex: 0
+          }
+        });
+        const searchItem = {
+          type: "webSearch",
+          id: `search-${id}`,
+          query: "official engineering dimensions",
+          action: { type: "search", query: "official engineering dimensions", queries: null }
+        };
+        send({
+          method: "item/started",
+          params: { threadId: request.params.threadId, turnId: id, item: searchItem, startedAtMs: Date.now() }
+        });
+        send({
+          method: "item/completed",
+          params: { threadId: request.params.threadId, turnId: id, item: searchItem, completedAtMs: Date.now() }
+        });
         send({
           method: "item/completed",
           params: { threadId: request.params.threadId, turnId: id, item, completedAtMs: Date.now() }

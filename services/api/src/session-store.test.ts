@@ -31,6 +31,7 @@ function pendingPlan(status: StoredCadPlan["status"] = "pending"): StoredCadPlan
       reason: "Clarify intent"
     }],
     warnings: [],
+    sources: [],
     requiresApproval: true,
     context: { documentId: "doc", workspaceId: "workspace", elementId: "element" },
     prompt: "Rename the base feature",

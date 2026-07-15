@@ -18,7 +18,12 @@ import {
   type RegenerationError,
   type StoredCadPlan
 } from "@morassistant/cad-command-schema";
-import { CodexWorkerPool, type CodexRuntimeStatus } from "@morassistant/codex-worker";
+import {
+  CodexWorkerPool,
+  type CodexRuntimeStatus,
+  type PlanningProgress,
+  type PlanningProgressCallback
+} from "@morassistant/codex-worker";
 import {
   buildOnshapeAuthorizationUrl,
   exchangeOnshapeCode,
@@ -95,10 +100,18 @@ type PlanJob = {
   sessionId: string;
   status: "planning" | "completed" | "failed";
   createdAt: number;
+  progress: PlanningProgress[];
   plan?: StoredCadPlan;
   error?: string;
 };
 const planJobs = new Map<string, PlanJob>();
+
+function updatePlanJobProgress(job: PlanJob, progress: PlanningProgress): void {
+  const existing = job.progress.findIndex((item) => item.id === progress.id);
+  if (existing >= 0) job.progress[existing] = progress;
+  else job.progress.push(progress);
+  if (job.progress.length > 30) job.progress.splice(0, job.progress.length - 30);
+}
 const geometryCache = new Map<string, { createdAt: number; evidence: PartStudioGeometryEvidence }>();
 const featureSpecsCache = new Map<string, { createdAt: number; specs: FeatureSpecsResponse }>();
 const sessionDatabasePath = env.SESSION_DB_PATH === ":memory:" ? env.SESSION_DB_PATH : resolve(repositoryRoot, env.SESSION_DB_PATH);
@@ -293,7 +306,8 @@ function parsePlanRequest(value: unknown): { prompt: string; context: PartStudio
 async function createStoredPlan(
   session: UserSession,
   body: { prompt: string; context: PartStudioContext },
-  recoveryForPlanId?: string
+  recoveryForPlanId?: string,
+  onProgress?: PlanningProgressCallback
 ): Promise<StoredCadPlan> {
   const client = clientFor(session, body.context);
   const snapshotKey = partStudioSnapshotKey(body.context);
@@ -352,7 +366,7 @@ async function createStoredPlan(
   if (!usedStoredSnapshot || !storedSnapshot?.geometry) {
     storePartStudioSnapshot(session, snapshotKey, featureTree, geometryEvidence(rawInspection));
   }
-  const planning = await workers.forUser(session.id).createPlan(body.prompt, inspection);
+  const planning = await workers.forUser(session.id).createPlan(body.prompt, inspection, onProgress);
   const plan = cadPlanSchema.parse(planning.plan);
   validatePlanAgainstIntent(body.prompt, validatePlanAgainstFeatureTree(plan, featuresWithHashes(featureTree.features)));
   if (body.context.configuration && plan.operations.some((operation) => operation.type === "update_dimension")) {
@@ -836,10 +850,11 @@ app.post("/api/plan-jobs", async (request, reply) => {
     id: randomUUID(),
     sessionId: session.id,
     status: "planning",
-    createdAt: Date.now()
+    createdAt: Date.now(),
+    progress: [{ id: "inspection", kind: "inspection", message: "Reading the current Onshape model and live feature catalog.", at: Date.now() }]
   };
   planJobs.set(job.id, job);
-  void createStoredPlan(session, body).then((plan) => {
+  void createStoredPlan(session, body, undefined, (progress) => updatePlanJobProgress(job, progress)).then((plan) => {
     job.status = "completed";
     job.plan = plan;
   }).catch((error) => {
@@ -849,7 +864,7 @@ app.post("/api/plan-jobs", async (request, reply) => {
   });
 
   reply.code(202);
-  return { id: job.id, status: job.status };
+  return { id: job.id, status: job.status, progress: job.progress };
 });
 
 app.get("/api/plan-jobs/:id", async (request, reply) => {
@@ -858,9 +873,9 @@ app.get("/api/plan-jobs/:id", async (request, reply) => {
   prunePlanJobs();
   const job = planJobs.get(id);
   if (!job || job.sessionId !== session.id) return reply.code(404).send({ error: "Plan request not found." });
-  if (job.status === "completed") return { id: job.id, status: job.status, plan: job.plan };
-  if (job.status === "failed") return { id: job.id, status: job.status, error: job.error };
-  return { id: job.id, status: job.status };
+  if (job.status === "completed") return { id: job.id, status: job.status, progress: job.progress, plan: job.plan };
+  if (job.status === "failed") return { id: job.id, status: job.status, progress: job.progress, error: job.error };
+  return { id: job.id, status: job.status, progress: job.progress };
 });
 
 app.post("/api/plans/:id/recovery-jobs", async (request, reply) => {
@@ -881,13 +896,15 @@ app.post("/api/plans/:id/recovery-jobs", async (request, reply) => {
     id: randomUUID(),
     sessionId: session.id,
     status: "planning",
-    createdAt: Date.now()
+    createdAt: Date.now(),
+    progress: [{ id: "inspection", kind: "inspection", message: "Re-reading the changed Onshape model for recovery.", at: Date.now() }]
   };
   planJobs.set(job.id, job);
   void createStoredPlan(
     session,
     { prompt: recoveryPrompt(failedPlan), context: failedPlan.context },
-    failedPlan.id
+    failedPlan.id,
+    (progress) => updatePlanJobProgress(job, progress)
   ).then((plan) => {
     job.status = "completed";
     job.plan = plan;
@@ -897,7 +914,7 @@ app.post("/api/plans/:id/recovery-jobs", async (request, reply) => {
     request.log.error(logError(error), "Background recovery planning failed");
   });
   reply.code(202);
-  return { id: job.id, status: job.status };
+  return { id: job.id, status: job.status, progress: job.progress };
 });
 
 app.post("/api/plans/:id/apply", async (request, reply) => {

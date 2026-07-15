@@ -88,6 +88,8 @@ The model context is deliberately CAD-shaped:
 | Rebuild state | Per-feature Onshape status before and after each edit | Separates pre-existing problems from failures introduced by the plan |
 | Tool curriculum | 177 built-in sketch, solid, surface, curve, sheet-metal, frame, assembly, inspection, and metadata lessons | Teaches prerequisites, method, and verification—not just toolbar names |
 | Live feature specs | Exact feature types and parameter definitions returned by the active Part Studio | Adapts to the current Onshape release and installed custom FeatureScript tools |
+| Live web research | Current primary sources for season rules, standards, products, and physical dimensions | Grounds requests such as the 2026 FRC season or regulation sports equipment in verifiable facts |
+| Live activity | Detailed reasoning summaries, web-search activity, inspection, and validation state | Replaces an opaque loading animation without exposing private chain-of-thought |
 
 Read-only geometric analysis uses Onshape's FeatureScript evaluation API. Persistent changes use Onshape's native Feature API, so the result remains editable, ordered, parametric CAD. Invalid model output is not merely rejected: the validation failure is fed back into the same planning thread for up to three bounded repair passes.
 
@@ -110,6 +112,8 @@ Create a 25 mm × 40 mm rectangle sketch named Mounting Profile
 Extrude Mounting Profile 15 mm as a new body
 Create a toy car with four separate wheels whose axles run left-to-right
 Add a 3 mm fillet to the outer edges of Base Extrusion
+Using the official 2026 FRC game manual, create the legal starting-volume envelope and cite the rule
+Research the regulation size of an American football, state any modeling assumptions, and create a dimensioned construction plan
 Rename Sketch 1 to Base Profile
 Rename Extrude 1 to Base Extrusion
 Change Base Extrusion depth from 4 mm to 6 mm
@@ -125,6 +129,8 @@ MorAssistant now uses two complementary knowledge layers. The versioned **177-to
 |:--|:--:|:--|
 | Read the active Part Studio model | ✅ | Feature payload, dependency, topology, mass-property, and rebuild inspection |
 | Evaluate FeatureScript for geometry analysis | ✅ | Read-only lambda evaluation; no persistent mutation |
+| Research current real-world facts | ✅ | First-party live web search, primary-source preference, source links in every researched preview |
+| Show planning progress live | ✅ | Detailed reasoning summaries plus inspection, research, and trusted-validation events; raw private reasoning is never exposed |
 | Self-correct an invalid generated plan | ✅ | Up to three schema + live feature-tree validation passes |
 | Create rectangle, square, and circle sketches in 3D | ✅ | Typed Top, Front, and Right datum-plane geometry with explicit world-axis mapping |
 | Build cylinders and blind/offset extrudes | ✅ | Typed `NEW`, `ADD`, `REMOVE`, and `INTERSECT` operations with direction, symmetry, and starting offset |
@@ -176,12 +182,14 @@ flowchart LR
   O -->|regeneration after every operation| A
 ```
 
-The model never receives an Onshape OAuth token, never sends arbitrary REST requests, and never performs CAD mutations during planning. The API accepts only the typed operation set defined in `@morassistant/cad-command-schema`.
+The model never receives an Onshape OAuth token, never sends arbitrary REST requests, and never performs CAD mutations during planning. It can use Codex's first-party live web search for public knowledge, while arbitrary command-line network access remains disabled. The API accepts only the typed operation set defined in `@morassistant/cad-command-schema`.
 
 ### Safety properties
 
 - **Preview before mutation** — creating a plan and applying it are separate endpoints.
 - **Timeout-resistant planning** — the panel starts a background planning job and polls it, so a long Codex turn never depends on a CDN request timeout.
+- **Visible live work** — the panel streams inspection state, detailed reasoning summaries, web-research activity, correction passes, and final trusted validation instead of showing a generic skeleton.
+- **Source-backed research** — current rules and dimensions are researched with a preference for FIRST, governing bodies, standards, and manufacturer documentation; used sources are clickable in the preview.
 - **Strict structured output** — Codex output is normalized and parsed through a closed schema.
 - **Verified model runtime** — the configured Sol model and reasoning effort must exist in the signed-in model catalog; a mismatched thread is stopped before planning.
 - **Bounded self-repair** — invalid generated plans receive precise validator feedback for at most three attempts.

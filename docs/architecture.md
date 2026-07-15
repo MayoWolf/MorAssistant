@@ -89,7 +89,9 @@ Onshape `429` responses honor `Retry-After` for short windows. During a longer f
 
 ## 2. Planning and bounded self-repair
 
-Codex runs in a read-only, network-disabled app-server turn. It receives CAD data, not OAuth credentials. Its response must match one closed JSON schema with an approval-required literal.
+Codex runs in a read-only app-server turn with arbitrary command-line networking disabled and first-party live web search enabled. It receives CAD data, not OAuth credentials. Current or season-specific facts—such as 2026 FRC rules, regulation dimensions, and manufacturer specifications—are grounded in public sources, and sources actually used are returned with the plan. Its response must match one closed JSON schema with an approval-required literal.
+
+While that turn runs, the API exposes a bounded live activity stream through the background planning job: Part Studio inspection, Codex's detailed reasoning summaries, web-search start/completion events, validation corrections, and the final trusted validation result. The panel never renders raw private chain-of-thought or arbitrary tool output.
 
 ```mermaid
 stateDiagram-v2

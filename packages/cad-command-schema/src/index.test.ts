@@ -53,6 +53,7 @@ describe("CAD plan validation", () => {
     expect(CAD_PLAN_JSON_SCHEMA.properties.operations.items.properties.type.enum).toContain("create_rectangle_sketch");
     expect(CAD_PLAN_JSON_SCHEMA.properties.operations.items.properties.type.enum).toContain("fillet_feature_edges");
     expect(CAD_PLAN_JSON_SCHEMA.properties.operations.items.properties.type.enum).toContain("chamfer_feature_edges");
+    expect(CAD_PLAN_JSON_SCHEMA.required).toContain("sources");
     const wirePlan = {
       summary: "Rename the base sketch",
       risk: "low",
@@ -80,6 +81,17 @@ describe("CAD plan validation", () => {
       requiresApproval: true
     };
     expect(cadPlanSchema.parse(normalizeCadPlanOutput(wirePlan))).toEqual(plan);
+  });
+
+  it("accepts only browser-safe research source URLs", () => {
+    expect(cadPlanSchema.parse({
+      ...plan,
+      sources: [{ title: "Official rulebook", url: "https://example.com/rules.pdf" }]
+    }).sources).toHaveLength(1);
+    expect(cadPlanSchema.safeParse({
+      ...plan,
+      sources: [{ title: "Unsafe link", url: "javascript:alert(1)" }]
+    }).success).toBe(false);
   });
 
   it("normalizes and validates rectangle sketch creation", () => {

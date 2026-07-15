@@ -30,10 +30,17 @@ function installationTokenFromLaunch(): string | null {
 
 const installationToken = installationTokenFromLaunch();
 
+type PlanningProgress = {
+  id: string;
+  kind: "inspection" | "reasoning" | "research" | "validation";
+  message: string;
+  at: number;
+};
+
 type PlanJobResponse =
-  | { id: string; status: "planning" }
-  | { id: string; status: "completed"; plan: StoredCadPlan }
-  | { id: string; status: "failed"; error: string };
+  | { id: string; status: "planning"; progress?: PlanningProgress[] }
+  | { id: string; status: "completed"; progress?: PlanningProgress[]; plan: StoredCadPlan }
+  | { id: string; status: "failed"; progress?: PlanningProgress[]; error: string };
 
 function contextFromUrl(): PartStudioContext | null {
   const params = new URLSearchParams(location.search);
@@ -73,11 +80,15 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return body;
 }
 
-async function waitForPlan(jobId: string): Promise<StoredCadPlan> {
+async function waitForPlan(
+  jobId: string,
+  onProgress: (progress: PlanningProgress[]) => void
+): Promise<StoredCadPlan> {
   const deadline = Date.now() + 10 * 60_000;
   while (Date.now() < deadline) {
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_000));
     const job = await api<PlanJobResponse>(`/api/plan-jobs/${jobId}`);
+    onProgress(job.progress ?? []);
     if (job.status === "completed") return job.plan;
     if (job.status === "failed") throw new Error(job.error);
   }
@@ -95,12 +106,21 @@ function ConnectionPill({ label, state }: { label: string; state: string }) {
   return <span className={`connection-pill ${state}`}><i />{label}</span>;
 }
 
-function SkeletonPlan({ label = "Creating plan" }: { label?: string }) {
-  return <div className="plan skeleton" aria-label={label}>
-    <div className="sk-line wide" /><div className="sk-line" />
-    <div className="sk-op"><span /><div><i /><i /></div></div>
-    <div className="sk-op"><span /><div><i /><i /></div></div>
-  </div>;
+function LiveActivity({ progress, label }: { progress: PlanningProgress[]; label: string }) {
+  const visible = progress.length > 0 ? progress : [{
+    id: "starting",
+    kind: "inspection" as const,
+    message: "Starting Sol and loading the current Part Studio context.",
+    at: Date.now()
+  }];
+  return <section className="live-activity" aria-label={label} aria-live="polite">
+    <div className="activity-heading"><span className="live-dot" /><div><strong>Sol is working live</strong><small>{label}</small></div></div>
+    <ol>{visible.map((item) => <li key={item.id} className={item.kind}>
+      <span>{item.kind === "research" ? "⌕" : item.kind === "validation" ? "✓" : item.kind === "reasoning" ? "◇" : "↻"}</span>
+      <p>{item.message}</p>
+    </li>)}</ol>
+    <p className="activity-note">Live reasoning summaries and research activity—not private chain-of-thought.</p>
+  </section>;
 }
 
 type PlanOperation = StoredCadPlan["operations"][number];
@@ -151,6 +171,7 @@ export function App() {
   const [deviceLogin, setDeviceLogin] = useState<DeviceCodeLogin | null>(null);
   const [prompt, setPrompt] = useState("");
   const [plan, setPlan] = useState<StoredCadPlan | null>(null);
+  const [activity, setActivity] = useState<PlanningProgress[]>([]);
   const [busy, setBusy] = useState<"planning" | "applying" | "recovering" | null>(null);
   const [recoveryMessage, setRecoveryMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -195,13 +216,14 @@ export function App() {
   const createPlan = async (event: FormEvent) => {
     event.preventDefault();
     if (!context || !prompt.trim()) return;
-    setBusy("planning"); setError(null); setPlan(null); setRecoveryMessage(null);
+    setBusy("planning"); setError(null); setPlan(null); setRecoveryMessage(null); setActivity([]);
     try {
       const job = await api<PlanJobResponse>("/api/plan-jobs", {
         method: "POST",
         body: JSON.stringify({ prompt, context })
       });
-      setPlan(job.status === "completed" ? job.plan : await waitForPlan(job.id));
+      setActivity(job.progress ?? []);
+      setPlan(job.status === "completed" ? job.plan : await waitForPlan(job.id, setActivity));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not create a plan.");
     } finally {
@@ -217,8 +239,10 @@ export function App() {
       setPlan(applied);
       if (applied.status === "failed" && !applied.recoveryForPlanId) {
         setBusy("recovering");
+        setActivity([]);
         const job = await api<PlanJobResponse>(`/api/plans/${applied.id}/recovery-jobs`, { method: "POST" });
-        const recovery = job.status === "completed" ? job.plan : await waitForPlan(job.id);
+        setActivity(job.progress ?? []);
+        const recovery = job.status === "completed" ? job.plan : await waitForPlan(job.id, setActivity);
         setPlan(recovery);
         const appliedCount = applied.result?.operations.filter((item) => item.status === "applied").length ?? 0;
         const stoppedAt = applied.result?.operations.find((item) => item.status === "failed" || item.verification !== "passed");
@@ -298,7 +322,7 @@ export function App() {
           value={prompt}
           onChange={(event) => updatePrompt(event.target.value)}
           onKeyDown={handlePromptKeyDown}
-          placeholder="Create, edit, combine, pattern, or remove Part Studio geometry…"
+          placeholder="Describe any real-world part, current rule, or CAD change—Sol can research it and build a plan…"
           rows={5}
           disabled={!ready || busy !== null}
         />
@@ -313,7 +337,7 @@ export function App() {
 
     {(error || statusError) && <section className="notice error" role="alert"><strong>Something needs attention</strong><p>{error ?? statusError}</p></section>}
     {recoveryMessage && <section className="notice recovery"><strong>Recovery plan ready</strong><p>{recoveryMessage}</p></section>}
-    {(busy === "planning" || busy === "recovering") && <SkeletonPlan label={busy === "recovering" ? "Preparing a recovery plan" : "Creating plan"} />}
+    {(busy === "planning" || busy === "recovering") && <LiveActivity progress={activity} label={busy === "recovering" ? "Preparing a recovery plan" : "Researching and creating the plan"} />}
 
     {plan && <section className={`plan ${plan.status}`}>
       <div className="plan-heading">
@@ -344,6 +368,9 @@ export function App() {
         </li>)}
       </ol>
       {plan.warnings.length > 0 && <div className="warnings">{plan.warnings.map((warning) => <p key={warning}>△ {warning}</p>)}</div>}
+      {(plan.sources?.length ?? 0) > 0 && <div className="research-sources"><strong>Research sources</strong>{plan.sources.map((source) =>
+        <a key={source.url} href={source.url} target="_blank" rel="noreferrer"><span>↗</span><span>{source.title}</span></a>
+      )}</div>}
       {plan.result?.regenerationErrors.length ? <div className="warnings error-list">{plan.result.regenerationErrors.map((item) => <p key={item.featureId}>! {item.featureName}: {item.message ?? item.status}</p>)}</div> : null}
       {plan.result?.preexistingRegenerationErrors?.length ? <div className="existing-errors"><p>{plan.result.preexistingRegenerationErrors.length} pre-existing model error(s) were recorded separately and did not fail this plan.</p></div> : null}
       <div className="approval-bar">

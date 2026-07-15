@@ -176,7 +176,11 @@ describe("installed Onshape extension pipeline", () => {
     });
     expect(jobStart.status).toBe(202);
     const { id: jobId } = await jobStart.json() as { id: string };
-    let completedJob: { status?: string; plan?: { status?: string; operations?: unknown[] } } = {};
+    let completedJob: {
+      status?: string;
+      progress?: Array<{ kind?: string; message?: string }>;
+      plan?: { status?: string; operations?: unknown[]; sources?: unknown[] };
+    } = {};
     for (let attempt = 0; attempt < 30; attempt += 1) {
       completedJob = await fetch(`${appOrigin}/api/plan-jobs/${jobId}`, {
         headers: sessionHeaders()
@@ -186,7 +190,12 @@ describe("installed Onshape extension pipeline", () => {
     }
     expect(completedJob).toMatchObject({
       status: "completed",
-      plan: { status: "pending", agentTrace: { planningAttempts: 1, featureCount: 1 } }
+      progress: expect.arrayContaining([
+        expect.objectContaining({ kind: "reasoning" }),
+        expect.objectContaining({ kind: "research", message: expect.stringContaining("Research complete") }),
+        expect.objectContaining({ kind: "validation" })
+      ]),
+      plan: { status: "pending", sources: [], agentTrace: { planningAttempts: 1, featureCount: 1 } }
     });
 
     const planResponse = await fetch(`${appOrigin}/api/plans`, {

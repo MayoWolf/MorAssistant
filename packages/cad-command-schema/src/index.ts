@@ -219,11 +219,17 @@ export const cadOperationSchema = z.discriminatedUnion("type", [
   deleteFeatureOperationSchema
 ]);
 
+export const researchSourceSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  url: z.string().url().regex(/^https?:\/\//iu, "Source URL must use HTTP or HTTPS.").max(2_048)
+}).strict();
+
 export const cadPlanSchema = z.object({
   summary: z.string().min(1).max(500),
   risk: z.enum(["low", "medium", "high"]),
   operations: z.array(cadOperationSchema).min(1).max(25),
   warnings: z.array(z.string().max(500)).max(10),
+  sources: z.array(researchSourceSchema).max(12).default([]),
   requiresApproval: z.literal(true)
 }).strict().superRefine((plan, context) => {
   const targets = new Set<string>();
@@ -334,7 +340,7 @@ export interface RegenerationError {
 export const CAD_PLAN_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["summary", "risk", "operations", "warnings", "requiresApproval"],
+  required: ["summary", "risk", "operations", "warnings", "sources", "requiresApproval"],
   properties: {
     summary: { type: "string", minLength: 1, maxLength: 500 },
     risk: { type: "string", enum: ["low", "medium", "high"] },
@@ -531,6 +537,20 @@ export const CAD_PLAN_JSON_SCHEMA = {
       }
     },
     warnings: { type: "array", maxItems: 10, items: { type: "string", maxLength: 500 } },
+    sources: {
+      type: "array",
+      maxItems: 12,
+      description: "Primary or authoritative web sources actually used for current rules, standards, products, or real-world dimensions. Empty when no web research was needed.",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["title", "url"],
+        properties: {
+          title: { type: "string", minLength: 1, maxLength: 200 },
+          url: { type: "string", maxLength: 2_048, description: "Absolute http(s) source URL." }
+        }
+      }
+    },
     requiresApproval: { type: "boolean", const: true }
   }
 } as const;
