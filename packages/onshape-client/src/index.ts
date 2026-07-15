@@ -2,14 +2,32 @@ import { createHash } from "node:crypto";
 import { parseFeatureJson, type CadOperation, type RegenerationError } from "@morassistant/cad-command-schema";
 import type { PartStudioContext } from "@morassistant/shared-types";
 import { buildRectangleSketchFeature } from "./rectangle-sketch.js";
-import { buildCircleSketchFeature, buildExtrudeFeature, buildFilletFeature } from "./native-features.js";
+import { buildChamferFeature, buildCircleSketchFeature, buildExtrudeFeature, buildFilletFeature } from "./native-features.js";
+
+export {
+  ONSHAPE_CAPABILITY_CATALOG,
+  ONSHAPE_CAPABILITY_CATALOG_VERSION,
+  assertCapabilityCatalogIntegrity,
+  capabilityCategoryCounts,
+  capabilityCurriculumText,
+  capabilityInventoryText,
+  compactFeatureSpecContext,
+  selectOnshapeCapabilities,
+  type CapabilityCategory,
+  type CapabilityExecution,
+  type CompactFeatureSpecContext,
+  type OnshapeCapability,
+  type OnshapeSurface
+} from "./capability-catalog.js";
 
 export { buildRectangleSketchFeature } from "./rectangle-sketch.js";
 export {
   buildCircleSketchFeature,
+  buildChamferFeature,
   buildExtrudeFeature,
   buildFilletFeature,
   type CircleSketchInput,
+  type ChamferFeatureInput,
   type ExtrudeFeatureInput,
   type ExtrudeOperation,
   type FilletFeatureInput
@@ -62,6 +80,13 @@ export interface FeatureListResponse {
   [key: string]: unknown;
 }
 
+export interface FeatureSpecsResponse {
+  featureSpecs?: unknown[];
+  features?: unknown[];
+  specs?: unknown[];
+  [key: string]: unknown;
+}
+
 export interface FeatureDependencyNode {
   featureId: string;
   name: string;
@@ -86,6 +111,7 @@ export interface PartStudioGeometrySummary {
 
 export interface PartStudioInspection {
   featureTree: FeatureListResponse;
+  featureSpecs?: FeatureSpecsResponse;
   dependencies: FeatureDependencyNode[];
   geometry: PartStudioGeometrySummary;
   bodyDetails?: unknown;
@@ -485,6 +511,14 @@ export class OnshapeClient {
     );
   }
 
+  async getFeatureSpecs(context: PartStudioContext): Promise<FeatureSpecsResponse> {
+    const query = new URLSearchParams({ rollbackBarIndex: "-1" });
+    if (context.configuration) query.set("configuration", context.configuration);
+    return this.request<FeatureSpecsResponse>(
+      `/partstudios/d/${encodeURIComponent(context.documentId)}/w/${encodeURIComponent(context.workspaceId)}/e/${encodeURIComponent(context.elementId)}/featurespecs?${query}`
+    );
+  }
+
   async getBodyDetails(context: PartStudioContext): Promise<unknown> {
     const query = new URLSearchParams();
     if (context.configuration) query.set("configuration", context.configuration);
@@ -729,6 +763,34 @@ export class OnshapeClient {
       }), tree);
       return {
         message: `Created ${operation.featureName}: ${operation.radiusMm} mm fillet on edges created by ${operation.targetFeatureName}.`,
+        response
+      };
+    }
+
+    if (operation.type === "chamfer_feature_edges") {
+      if (tree.features.some((feature) => feature.name?.toLocaleLowerCase() === operation.featureName.toLocaleLowerCase())) {
+        throw new Error(`A feature named ${operation.featureName} already exists.`);
+      }
+      const target = tree.features.find(
+        (feature) => feature.name?.toLocaleLowerCase() === operation.targetFeatureName.toLocaleLowerCase()
+      );
+      if (!target) throw new Error(`Chamfer target ${operation.targetFeatureName} was not found.`);
+      const edgeTransientIds = await this.getTransientIdsForFeatureEdges(
+        context,
+        target.featureId,
+        typeof tree.libraryVersion === "number" ? tree.libraryVersion : undefined
+      );
+      if (edgeTransientIds.length === 0) {
+        throw new Error(`${operation.targetFeatureName} did not create any chamferable edges.`);
+      }
+      const response = await this.addFeature(context, buildChamferFeature({
+        name: operation.featureName,
+        edgeTransientIds,
+        distanceMm: operation.distanceMm,
+        tangentPropagation: operation.tangentPropagation
+      }), tree);
+      return {
+        message: `Created ${operation.featureName}: ${operation.distanceMm} mm equal-offset chamfer on edges created by ${operation.targetFeatureName}.`,
         response
       };
     }

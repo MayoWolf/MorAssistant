@@ -50,6 +50,7 @@ describe("CAD plan validation", () => {
     expect(CAD_PLAN_JSON_SCHEMA.properties.requiresApproval).toEqual({ type: "boolean", const: true });
     expect(CAD_PLAN_JSON_SCHEMA.properties.operations.items.properties.type.enum).toContain("create_rectangle_sketch");
     expect(CAD_PLAN_JSON_SCHEMA.properties.operations.items.properties.type.enum).toContain("fillet_feature_edges");
+    expect(CAD_PLAN_JSON_SCHEMA.properties.operations.items.properties.type.enum).toContain("chamfer_feature_edges");
     const wirePlan = {
       summary: "Rename the base sketch",
       risk: "low",
@@ -150,6 +151,26 @@ describe("CAD plan validation", () => {
     }));
     expect(validatePlanAgainstFeatureTree(nativePlan, [{ featureId: "s1", name: "Profile" }])).toBe(nativePlan);
     expect(() => validatePlanAgainstFeatureTree(nativePlan, [])).toThrow("unavailable feature Profile");
+    const embeddedReferencePlan = {
+      ...nativePlan,
+      operations: [{
+        ...nativePlan.operations[0],
+        featureJson: JSON.stringify({
+          btType: "BTMFeature-134",
+          featureType: "chamfer",
+          name: "Invalid chamfer",
+          parameters: [{
+            btType: "BTMParameterQueryList-148",
+            parameterId: "entities",
+            queries: [{ queryString: 'query=qCreatedBy(id + "@feature:Profile", EntityType.EDGE);' }]
+          }]
+        }),
+        featureName: "Invalid chamfer",
+        featureType: "chamfer"
+      }]
+    } as typeof nativePlan;
+    expect(() => validatePlanAgainstFeatureTree(embeddedReferencePlan, [{ featureId: "s1", name: "Profile" }]))
+      .toThrow("must be the complete JSON string value");
   });
 
   it("validates a typed cylinder and fillet recipe in dependency order", () => {
@@ -190,6 +211,25 @@ describe("CAD plan validation", () => {
       ...typedPlan,
       operations: typedPlan.operations.slice(1)
     }, [])).toThrow("Extrude source Cylinder profile is unavailable");
+  });
+
+  it("normalizes and validates a typed cylinder chamfer recipe", () => {
+    const chamferPlan = cadPlanSchema.parse(normalizeCadPlanOutput({
+      summary: "Bevel a cylinder",
+      risk: "medium",
+      operations: [{
+        type: "chamfer_feature_edges",
+        featureName: "Cylinder bevels",
+        targetFeatureName: "Cylinder body",
+        distanceMm: 1,
+        tangentPropagation: false,
+        reason: "Break the end edges"
+      }],
+      warnings: [],
+      requiresApproval: true
+    }));
+    expect(validatePlanAgainstFeatureTree(chamferPlan, [{ featureId: "e1", name: "Cylinder body" }])).toBe(chamferPlan);
+    expect(cadPlanSchema.safeParse({ ...chamferPlan, risk: "low" }).success).toBe(false);
   });
 
   it("requires high risk for deletion and an exact hash for whole-feature replacement", () => {

@@ -25,6 +25,13 @@ export interface FilletFeatureInput {
   tangentPropagation: boolean;
 }
 
+export interface ChamferFeatureInput {
+  name: string;
+  edgeTransientIds: string[];
+  distanceMm: number;
+  tangentPropagation: boolean;
+}
+
 function objectId(): string {
   // Onshape BTObjectId values use standard base64, not base64url.
   return randomBytes(12).toString("base64").replace(/=+$/u, "");
@@ -333,5 +340,22 @@ export function buildFilletFeature(input: FilletFeatureInput): Record<string, un
       operand1: { btType: "BTEntityTypeFilter-124", entityType: "VERTEX" },
       operand2: { btType: "BTModifiableEntityOnlyFilter-1593", modifiableOnly: true }
     })
+  ]);
+}
+
+/** Build an equal-offset edge chamfer over all supplied current transient edges. */
+export function buildChamferFeature(input: ChamferFeatureInput): Record<string, unknown> {
+  return featureRoot(input.name, "chamfer", [
+    queryList("entities", input.edgeTransientIds.map((transientId) => ({
+      btType: "BTMIndividualQuery-138",
+      queryStatement: null,
+      queryString: `query=qTransient(${JSON.stringify(transientId)});`,
+      nodeId: objectId(),
+      deterministicIds: [transientId]
+    })), filletEntityFilter),
+    enumParameter("chamferMethod", "ChamferMethod", "FACE_OFFSET"),
+    enumParameter("chamferType", "ChamferType", "EQUAL_OFFSETS"),
+    quantityParameter("width", `${input.distanceMm} mm`),
+    booleanParameter("tangentPropagation", input.tangentPropagation)
   ]);
 }

@@ -66,6 +66,46 @@ const onshape = createServer(async (request, response) => {
   if (!request.headers.authorization?.startsWith("Bearer mock-")) {
     return json(response, 401, { message: "missing mock bearer token" });
   }
+  if (request.method === "GET" && /\/api\/v13\/partstudios\/d\/[^/]+\/w\/[^/]+\/e\/[^/]+\/featurespecs$/.test(url.pathname)) {
+    return json(response, 200, {
+      btType: "BTFeatureSpecsResponse-2000",
+      featureSpecs: [{
+        btType: "BTFeatureSpec-129",
+        featureType: "newSketch",
+        featureName: "Sketch",
+        parameters: [{ btType: "BTMParameterSpecQuery-202", parameterId: "sketchPlane", parameterName: "Sketch plane" }]
+      }, {
+        btType: "BTFeatureSpec-129",
+        featureType: "extrude",
+        featureName: "Extrude",
+        parameters: [
+          { btType: "BTMParameterSpecEnum-200", parameterId: "operationType", parameterName: "Operation", enumName: "NewBodyOperationType" },
+          { btType: "BTMParameterSpecQuantity-201", parameterId: "depth", parameterName: "Depth" }
+        ]
+      }, {
+        btType: "BTFeatureSpec-129",
+        featureType: "chamfer",
+        featureName: "Chamfer",
+        parameters: [
+          { btType: "BTMParameterSpecQuery-202", parameterId: "entities", parameterName: "Entities" },
+          { btType: "BTMParameterSpecQuantity-201", parameterId: "width", parameterName: "Distance" }
+        ]
+      }, {
+        btType: "BTFeatureSpec-129",
+        featureType: "sweep",
+        featureName: "Sweep",
+        parameters: [
+          { btType: "BTMParameterSpecQuery-202", parameterId: "profiles", parameterName: "Profiles" },
+          { btType: "BTMParameterSpecQuery-202", parameterId: "path", parameterName: "Path" }
+        ]
+      }, {
+        btType: "BTFeatureSpec-129",
+        featureType: "loft",
+        featureName: "Loft",
+        parameters: [{ btType: "BTMParameterSpecQuery-202", parameterId: "profileSubqueries", parameterName: "Profiles" }]
+      }]
+    });
+  }
   if (request.method === "GET" && /\/api\/v13\/partstudios\/d\/[^/]+\/w\/[^/]+\/e\/[^/]+\/features$/.test(url.pathname)) {
     if (rateLimitFeatureReads) {
       response.writeHead(429, {
@@ -77,6 +117,7 @@ const onshape = createServer(async (request, response) => {
     }
     return json(response, 200, {
       btType: "BTFeatureListResponse-2457",
+      libraryVersion: 3000,
       serializationVersion: "1.2.4",
       sourceMicroversion: `m${microversion}`,
       features: [feature, ...sketches],
@@ -102,6 +143,20 @@ const onshape = createServer(async (request, response) => {
     return json(response, 200, { microversionId: `m${microversion}`, bodies: { "-all-": aggregate, "part-1": aggregate } });
   }
   if (request.method === "POST" && /\/api\/v13\/partstudios\/d\/[^/]+\/w\/[^/]+\/e\/[^/]+\/featurescript$/.test(url.pathname)) {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (String(body.script).includes("edge.transientId")) {
+      return json(response, 200, {
+        result: {
+          btType: "com.belmonttech.serialize.fsvalue.BTFSValueArray",
+          value: [
+            { btType: "com.belmonttech.serialize.fsvalue.BTFSValueString", value: "JEDGE1" },
+            { btType: "com.belmonttech.serialize.fsvalue.BTFSValueString", value: "JEDGE2" }
+          ]
+        }
+      });
+    }
     return json(response, 200, {
       result: { solidBodyCount: 1, faceCount: 6, edgeCount: 12, vertexCount: 8 }
     });

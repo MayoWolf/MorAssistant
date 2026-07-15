@@ -53,9 +53,14 @@ export function parseFeatureJson(value: string): Record<string, unknown> {
 export function featureReferences(feature: unknown): string[] {
   const references = new Set<string>();
   const visit = (value: unknown): void => {
-    if (typeof value === "string" && value.startsWith("@feature:")) {
-      const name = value.slice("@feature:".length).trim();
-      if (name) references.add(name);
+    if (typeof value === "string") {
+      if (value.includes("@feature:") && !value.startsWith("@feature:")) {
+        throw new Error("@feature references must be the complete JSON string value, not embedded inside a queryString or expression.");
+      }
+      if (value.startsWith("@feature:")) {
+        const name = value.slice("@feature:".length).trim();
+        if (name) references.add(name);
+      }
       return;
     }
     if (Array.isArray(value)) {
@@ -129,6 +134,15 @@ export const filletFeatureEdgesOperationSchema = z.object({
   reason: z.string().min(1).max(500)
 }).strict();
 
+export const chamferFeatureEdgesOperationSchema = z.object({
+  type: z.literal("chamfer_feature_edges"),
+  featureName: z.string().trim().min(1).max(100),
+  targetFeatureName: z.string().trim().min(1).max(100),
+  distanceMm: z.number().finite().min(0.01).max(10_000),
+  tangentPropagation: z.boolean(),
+  reason: z.string().min(1).max(500)
+}).strict();
+
 export const createFeatureOperationSchema = z.object({
   type: z.literal("create_feature"),
   featureName: z.string().trim().min(1).max(100),
@@ -196,6 +210,7 @@ export const cadOperationSchema = z.discriminatedUnion("type", [
   createCircleSketchOperationSchema,
   extrudeSketchOperationSchema,
   filletFeatureEdgesOperationSchema,
+  chamferFeatureEdgesOperationSchema,
   createFeatureOperationSchema,
   replaceFeatureOperationSchema,
   deleteFeatureOperationSchema
@@ -218,7 +233,7 @@ export const cadPlanSchema = z.object({
         ? `dimension:${operation.featureId}:${operation.parameterId}`
         : operation.type === "create_rectangle_sketch" || operation.type === "create_circle_sketch"
           ? `new-feature:${operation.sketchName.toLocaleLowerCase()}`
-          : operation.type === "create_feature" || operation.type === "extrude_sketch" || operation.type === "fillet_feature_edges"
+          : operation.type === "create_feature" || operation.type === "extrude_sketch" || operation.type === "fillet_feature_edges" || operation.type === "chamfer_feature_edges"
             ? `new-feature:${operation.featureName.toLocaleLowerCase()}`
             : `whole-feature:${operation.featureId}`;
     if (targets.has(target)) {
@@ -242,7 +257,7 @@ export const cadPlanSchema = z.object({
     if (operation.type === "delete_feature" && plan.risk !== "high") {
       context.addIssue({ code: "custom", path: ["risk"], message: "Plans that delete features must be high risk." });
     }
-    if (["create_feature", "replace_feature", "extrude_sketch", "fillet_feature_edges"].includes(operation.type) && plan.risk === "low") {
+    if (["create_feature", "replace_feature", "extrude_sketch", "fillet_feature_edges", "chamfer_feature_edges"].includes(operation.type) && plan.risk === "low") {
       context.addIssue({ code: "custom", path: ["risk"], message: "Native feature payload plans must be at least medium risk." });
     }
   }
@@ -267,6 +282,9 @@ export interface StoredCadPlan extends CadPlan {
       serviceTier?: string;
     };
     featureCount: number;
+    capabilityCount?: number;
+    nativeFeatureTypeCount?: number;
+    capabilityCatalogVersion?: string;
     dependencyCount: number;
     geometry: {
       bodyCount?: number;
@@ -338,6 +356,7 @@ export const CAD_PLAN_JSON_SCHEMA = {
           "widthMm",
           "heightMm",
           "radiusMm",
+          "distanceMm",
           "centerXmm",
           "centerYmm",
           "sourceFeatureName",
@@ -362,6 +381,7 @@ export const CAD_PLAN_JSON_SCHEMA = {
               "create_circle_sketch",
               "extrude_sketch",
               "fillet_feature_edges",
+              "chamfer_feature_edges",
               "create_feature",
               "replace_feature",
               "delete_feature"
@@ -425,6 +445,12 @@ export const CAD_PLAN_JSON_SCHEMA = {
             maximum: 10_000,
             description: "Circle radius for create_circle_sketch or edge radius for fillet_feature_edges, in millimeters; null otherwise."
           },
+          distanceMm: {
+            type: ["number", "null"],
+            minimum: 0.01,
+            maximum: 10_000,
+            description: "Equal-offset chamfer distance in millimeters for chamfer_feature_edges; null otherwise."
+          },
           centerXmm: {
             type: ["number", "null"],
             minimum: -100_000,
@@ -464,11 +490,11 @@ export const CAD_PLAN_JSON_SCHEMA = {
           targetFeatureName: {
             type: ["string", "null"],
             maxLength: 100,
-            description: "Existing or earlier-created solid feature whose created edges are filleted; null otherwise."
+            description: "Existing or earlier-created solid feature whose created edges are filleted or chamfered; null otherwise."
           },
           tangentPropagation: {
             type: ["boolean", "null"],
-            description: "Tangent propagation for fillet_feature_edges; null otherwise."
+            description: "Tangent propagation for fillet_feature_edges or chamfer_feature_edges; null otherwise."
           },
           currentFeatureHash: {
             type: ["string", "null"],
@@ -573,6 +599,16 @@ export function normalizeCadPlanOutput(input: unknown): unknown {
           reason: value.reason
         };
       }
+      if (value.type === "chamfer_feature_edges") {
+        return {
+          type: value.type,
+          featureName: value.featureName,
+          targetFeatureName: value.targetFeatureName,
+          distanceMm: value.distanceMm,
+          tangentPropagation: value.tangentPropagation,
+          reason: value.reason
+        };
+      }
       if (value.type === "create_feature") {
         return {
           type: value.type,
@@ -618,6 +654,7 @@ export function validatePlanAgainstFeatureTree(
       operation.type === "create_circle_sketch" ||
       operation.type === "extrude_sketch" ||
       operation.type === "fillet_feature_edges" ||
+      operation.type === "chamfer_feature_edges" ||
       operation.type === "create_feature") {
       const name = operation.type === "create_rectangle_sketch" || operation.type === "create_circle_sketch"
         ? operation.sketchName
@@ -634,6 +671,9 @@ export function validatePlanAgainstFeatureTree(
       }
       if (operation.type === "fillet_feature_edges" && !names.has(operation.targetFeatureName.toLocaleLowerCase())) {
         throw new Error(`Fillet target ${operation.targetFeatureName} is unavailable. Put its solid feature creation earlier in the plan.`);
+      }
+      if (operation.type === "chamfer_feature_edges" && !names.has(operation.targetFeatureName.toLocaleLowerCase())) {
+        throw new Error(`Chamfer target ${operation.targetFeatureName} is unavailable. Put its solid feature creation earlier in the plan.`);
       }
       if (names.has(name.toLocaleLowerCase())) {
         throw new Error(`A feature named ${name} already exists.`);

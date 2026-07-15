@@ -20,6 +20,8 @@
   ·
   <a href="docs/onshape-installation.md">Install in Onshape</a>
   ·
+  <a href="docs/onshape-capability-curriculum.md">177-tool curriculum</a>
+  ·
   <a href="docs/personal-tailscale-deployment.md">Personal deployment</a>
   ·
   <a href="docs/app-store-release-checklist.md">App Store release</a>
@@ -84,6 +86,8 @@ The model context is deliberately CAD-shaped:
 | Geometry | Solid/body, face, edge, and vertex counts plus bounded body details | Gives the planner topology evidence instead of only feature names |
 | Physical properties | Part count, volume, mass, and centroid when Onshape can calculate them | Helps check scale and geometric plausibility |
 | Rebuild state | Per-feature Onshape status before and after each edit | Separates pre-existing problems from failures introduced by the plan |
+| Tool curriculum | 177 built-in sketch, solid, surface, curve, sheet-metal, frame, assembly, inspection, and metadata lessons | Teaches prerequisites, method, and verification—not just toolbar names |
+| Live feature specs | Exact feature types and parameter definitions returned by the active Part Studio | Adapts to the current Onshape release and installed custom FeatureScript tools |
 
 Read-only geometric analysis uses Onshape's FeatureScript evaluation API. Persistent changes use Onshape's native Feature API, so the result remains editable, ordered, parametric CAD. Invalid model output is not merely rejected: the validation failure is fed back into the same planning thread for up to three bounded repair passes.
 
@@ -114,6 +118,8 @@ The complete Developer Portal configuration and private-install test are in [doc
 
 ## What works today
 
+MorAssistant now uses two complementary knowledge layers. The versioned **177-tool curriculum** teaches modeling intent for the complete Sketch, Part Studio, sheet-metal, frame, and Assembly tool families. Before every plan, the backend also reads Onshape's live `featurespecs` catalog and sends the relevant exact schemas to Sol. New built-ins and document-specific custom FeatureScript features therefore do not depend on a future MorAssistant release. See **[the full capability curriculum and execution matrix →](docs/onshape-capability-curriculum.md)**.
+
 | Capability | Status | Guardrail |
 |:--|:--:|:--|
 | Read the active Part Studio model | ✅ | Feature payload, dependency, topology, mass-property, and rebuild inspection |
@@ -124,7 +130,10 @@ The complete Developer Portal configuration and private-install test are in [doc
 | Build cylinders and blind extrudes | ✅ | Typed `NEW`, `ADD`, `REMOVE`, and `INTERSECT` solid operations |
 | Cut round holes and pockets | ✅ | Circle + guarded `REMOVE` extrude recipe |
 | Fillet feature-created edges | ✅ | FeatureScript resolves live edge transient IDs, then native fillet input is regenerated and verified |
-| Create other standard native Part Studio features | 🧪 Fallback | Bounded BTM payload, ordered feature-name references, current Onshape API validation |
+| Chamfer feature-created edges | ✅ | FeatureScript resolves current edges, then a typed equal-offset native chamfer is compiled and verified |
+| Understand the full Onshape modeling toolbar | ✅ | 177 versioned lessons with prerequisites, workflows, synonyms, and verification rules |
+| Discover current and custom Part Studio features | ✅ | Authenticated live `featurespecs` read, one-hour bounded cache, exact parameter schemas |
+| Create other standard native Part Studio features | 🧪 Schema-driven | Relevant live feature spec + exact exemplars + bounded BTM payload + Onshape regeneration validation |
 | Replace a complete existing feature | ✅ Beta | Exact SHA-256 snapshot match plus microversion guard |
 | Delete an existing feature | ✅ | Exact ID/name match, high-risk preview, explicit approval |
 | Rename existing features | ✅ | Exact feature ID and current-name match |
@@ -137,7 +146,7 @@ The complete Developer Portal configuration and private-install test are in [doc
 | Edit dimensions in custom configurations | Refused | Renames remain available; ambiguous configured edits fail closed |
 | Assemblies, drawings, releases, and document administration | Roadmap | The current extension is intentionally scoped to the active Part Studio |
 
-Common operations use dedicated typed builders. For a cylinder, Sol emits a circle sketch and an extrude—not an opaque blob. For a round hole, it emits the same profile plus a `REMOVE` extrude. Fillets add one read-only FeatureScript selection pass because Onshape’s native Feature API requires current edge transient IDs; those IDs are resolved immediately before the guarded mutation.
+Common operations use dedicated typed builders. For a cylinder, Sol emits a circle sketch and an extrude—not an opaque blob. For a round hole, it emits the same profile plus a `REMOVE` extrude. Fillets and chamfers add one read-only FeatureScript selection pass because Onshape’s native Feature API requires current edge transient IDs; those IDs are resolved immediately before the guarded mutation.
 
 Everything else in the active Part Studio can use the bounded native-feature fallback: Codex proposes the exact payload, the panel labels it as a native operation, the API validates its structure and references, and Onshape performs final feature validation after approval. Assemblies, drawings, release workflows, and persistent custom FeatureScript definitions need their own element-specific APIs and are not silently treated as Part Studio operations.
 
@@ -251,6 +260,7 @@ npm audit --omit=dev
 - exact model-catalog verification and high-effort turn pinning;
 - the current Codex app-server sandbox and structured-output protocol;
 - plan validation against a live feature snapshot;
+- complete-curriculum routing and exact live feature-spec delivery to the planner;
 - dependency, topology, FeatureScript, and mass-property inspection;
 - bounded correction of an initially invalid Codex plan;
 - approval-gated circle, rectangle, extrude/cut, fillet, native feature creation, whole-feature replacement, deletion, rename, and dimension mutations;

@@ -2,7 +2,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { OnshapeClient } from "@morassistant/onshape-client";
+import {
+  ONSHAPE_CAPABILITY_CATALOG,
+  ONSHAPE_CAPABILITY_CATALOG_VERSION,
+  OnshapeClient,
+  capabilityCategoryCounts,
+  selectOnshapeCapabilities
+} from "@morassistant/onshape-client";
 
 const accessToken = process.env.MOR_ONSHAPE_ACCESS_TOKEN;
 if (!accessToken) throw new Error("MOR_ONSHAPE_ACCESS_TOKEN is required.");
@@ -19,6 +25,48 @@ const contextShape = {
   workspaceId: z.string().min(1).describe("Current Onshape workspace ID"),
   elementId: z.string().min(1).describe("Current Part Studio element ID")
 };
+
+server.registerTool("list_onshape_capabilities", {
+  title: "List learned Onshape tools",
+  description: "Read MorAssistant's complete Onshape modeling curriculum or select the tools relevant to a natural-language goal.",
+  inputSchema: {
+    prompt: z.string().max(2_000).optional(),
+    surface: z.enum(["sketch", "part_studio", "assembly", "document"]).optional()
+  },
+  annotations: { readOnlyHint: true, destructiveHint: false }
+}, async ({ prompt, surface }) => {
+  const selected = prompt ? selectOnshapeCapabilities(prompt, 60) : [...ONSHAPE_CAPABILITY_CATALOG];
+  const capabilities = selected.filter((capability) => !surface || capability.surface === surface);
+  const result = {
+    version: ONSHAPE_CAPABILITY_CATALOG_VERSION,
+    total: ONSHAPE_CAPABILITY_CATALOG.length,
+    categoryCounts: capabilityCategoryCounts(),
+    capabilities
+  };
+  return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result };
+});
+
+server.registerTool("get_feature_specs", {
+  title: "Get live Onshape feature specifications",
+  description: "Read exact current built-in and custom FeatureScript parameter schemas from the active Part Studio before constructing a native feature payload.",
+  inputSchema: {
+    ...contextShape,
+    featureTypes: z.array(z.string().min(1).max(200)).max(30).optional()
+  },
+  annotations: { readOnlyHint: true, destructiveHint: false }
+}, async ({ featureTypes, ...context }) => {
+  const response = await client.getFeatureSpecs(context);
+  const specs = Array.isArray(response.featureSpecs)
+    ? response.featureSpecs.filter((spec) => {
+      if (!featureTypes?.length) return true;
+      if (!spec || typeof spec !== "object" || Array.isArray(spec)) return false;
+      const featureType = (spec as Record<string, unknown>).featureType;
+      return typeof featureType === "string" && featureTypes.some((candidate) => candidate.toLocaleLowerCase() === featureType.toLocaleLowerCase());
+    }).slice(0, featureTypes?.length ? 30 : 200)
+    : [];
+  const result = { featureSpecs: specs };
+  return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result };
+});
 
 server.registerTool("list_features", {
   title: "List Part Studio features",
@@ -204,6 +252,29 @@ server.registerTool("fillet_feature_edges", {
     featureName,
     targetFeatureName,
     radiusMm,
+    tangentPropagation,
+    reason: "Approved MCP operation"
+  });
+  return { content: [{ type: "text", text: message }] };
+});
+
+server.registerTool("chamfer_feature_edges", {
+  title: "Chamfer feature-created edges",
+  description: "Resolve and apply an equal-offset chamfer to all current solid edges created by a named feature.",
+  inputSchema: {
+    ...contextShape,
+    featureName: z.string().trim().min(1).max(100),
+    targetFeatureName: z.string().trim().min(1).max(100),
+    distanceMm: z.number().min(0.01).max(10_000),
+    tangentPropagation: z.boolean()
+  },
+  annotations: { readOnlyHint: false, destructiveHint: false }
+}, async ({ featureName, targetFeatureName, distanceMm, tangentPropagation, ...context }) => {
+  const message = await client.applyOperation(context, {
+    type: "chamfer_feature_edges",
+    featureName,
+    targetFeatureName,
+    distanceMm,
     tangentPropagation,
     reason: "Approved MCP operation"
   });

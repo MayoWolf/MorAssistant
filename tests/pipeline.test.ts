@@ -427,6 +427,29 @@ describe("installed Onshape extension pipeline", () => {
     expect(throttledState.microversion).toBe(13);
     const disableFeatureRateLimit = await fetch(`${onshapeOrigin}/__feature-rate-limit?enabled=false`, { method: "POST" });
     expect(disableFeatureRateLimit.status).toBe(200);
+
+    const chamferPlanResponse = await fetch(`${appOrigin}/api/plans`, {
+      method: "POST",
+      headers: sessionHeaders({ origin: appOrigin, "content-type": "application/json" }),
+      body: JSON.stringify({ prompt: "Use the chamfer curriculum to bevel the base edges", context })
+    });
+    expect(chamferPlanResponse.status).toBe(201);
+    const chamferPlan = await chamferPlanResponse.json() as {
+      id: string;
+      operations: Array<{ type: string; distanceMm?: number }>;
+      agentTrace?: { capabilityCount?: number; nativeFeatureTypeCount?: number };
+    };
+    expect(chamferPlan.operations[0]).toMatchObject({ type: "chamfer_feature_edges", distanceMm: 1 });
+    expect(chamferPlan.agentTrace).toMatchObject({ capabilityCount: 177, nativeFeatureTypeCount: 5 });
+    const chamferApply = await fetch(`${appOrigin}/api/plans/${chamferPlan.id}/apply`, {
+      method: "POST",
+      headers: sessionHeaders({ origin: appOrigin })
+    });
+    expect(chamferApply.status).toBe(200);
+    expect(await chamferApply.json()).toMatchObject({
+      status: "applied",
+      result: { regenerationErrors: [], operations: [{ status: "applied", verification: "passed" }] }
+    });
   }, 20_000);
 
   it("rejects version contexts and unexpected Onshape stacks", async () => {

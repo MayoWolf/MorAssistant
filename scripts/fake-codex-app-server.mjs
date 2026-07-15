@@ -20,6 +20,12 @@ function planFromInput(params) {
   const model = markerIndex >= 0 ? JSON.parse(text.slice(markerIndex + marker.length)) : { features: [] };
   const snapshot = model.features ?? [];
   const userRequest = markerIndex >= 0 ? text.slice(0, markerIndex) : text;
+  if (!model.capabilityCatalog?.completeInventory?.includes("sketch_geometry:") ||
+      !model.capabilityCatalog?.relevantCurriculum?.includes("requires:") ||
+      !model.liveNativeFeatures?.availableFeatureTypes?.some((entry) => entry.featureType === "chamfer") ||
+      !model.liveNativeFeatures?.relevantFeatureSpecs?.some((entry) => ["extrude", "newSketch"].includes(entry.featureType))) {
+    throw new Error("The fake planner did not receive the complete Onshape curriculum and live feature specifications.");
+  }
   if (/self-correct/i.test(userRequest) && !/previous proposed plan failed trusted-host validation/i.test(userRequest)) {
     const feature = snapshot[0];
     return {
@@ -63,6 +69,23 @@ function planFromInput(params) {
         currentName: feature.name,
         newName: "Broken Base",
         reason: "Exercises per-operation regeneration verification"
+      }],
+      warnings: [],
+      requiresApproval: true
+    };
+  }
+  if (/chamfer curriculum/i.test(userRequest)) {
+    const target = snapshot[0];
+    return {
+      summary: `Chamfer edges created by ${target.name}`,
+      risk: "medium",
+      operations: [{
+        type: "chamfer_feature_edges",
+        featureName: "Base edge chamfers",
+        targetFeatureName: target.name,
+        distanceMm: 1,
+        tangentPropagation: false,
+        reason: "Exercises the typed chamfer tool learned by the capability curriculum"
       }],
       warnings: [],
       requiresApproval: true

@@ -68,6 +68,13 @@ Part Studio inspection
     ├── body details
     ├── mass properties
     └── transient FeatureScript topology probe
+├── capability curriculum
+│   ├── 177 built-in tool lessons
+│   ├── natural-language aliases and prerequisites
+│   └── per-tool method and verification rules
+└── live feature specifications
+    ├── every available current/custom feature type
+    └── exact relevant parameter schemas
 ```
 
 Dependency edges are extracted only from references to known top-level feature IDs. This is intentionally conservative: an omitted edge makes the planner less confident, while an invented edge can misrepresent design intent. Whole-feature changes also receive an automatically generated downstream-dependency warning when direct consumers are known.
@@ -103,12 +110,15 @@ The same planning thread gets exact trusted-host feedback and the complete model
 The operation language currently includes:
 
 - guarded rename and quantity-expression edits;
-- a typed Top-plane rectangle/square sketch builder;
+- typed Top-plane rectangle/square and circle sketch builders;
+- typed blind `NEW`, `ADD`, `REMOVE`, and `INTERSECT` extrudes;
+- typed feature-edge fillets with live transient-ID resolution;
+- typed equal-offset feature-edge chamfers with live transient-ID resolution;
 - bounded creation of native `BTMFeature-134` and `BTMSketch-151` payloads;
 - exact-hash replacement of an existing native feature;
 - explicit high-risk feature deletion.
 
-Native payloads may refer to existing or earlier-created features with `@feature:Exact Name`. The trusted Onshape client resolves those references immediately before mutation, after re-reading the feature tree.
+Native payloads may refer to existing or earlier-created features with `@feature:Exact Name`. The trusted Onshape client resolves those references immediately before mutation, after re-reading the feature tree. Exact current schemas come from the active Part Studio's `featurespecs` endpoint and are paired with the relevant entries from the [177-tool capability curriculum](onshape-capability-curriculum.md).
 
 ## 3. Approval and stale-plan protection
 

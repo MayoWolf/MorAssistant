@@ -11,7 +11,13 @@ import {
   type CadPlan
 } from "@morassistant/cad-command-schema";
 import {
+  ONSHAPE_CAPABILITY_CATALOG,
+  ONSHAPE_CAPABILITY_CATALOG_VERSION,
+  capabilityCurriculumText,
+  capabilityInventoryText,
+  compactFeatureSpecContext,
   featureFingerprint,
+  selectOnshapeCapabilities,
   type FeatureDependencyNode,
   type PartStudioGeometrySummary,
   type PartStudioInspection
@@ -121,6 +127,9 @@ export interface PlanningResult {
   runtime: CodexRuntimeStatus;
   inspection: {
     featureCount: number;
+    capabilityCount: number;
+    nativeFeatureTypeCount: number;
+    capabilityCatalogVersion: string;
     dependencyCount: number;
     geometry: PartStudioGeometrySummary;
     warnings: string[];
@@ -390,6 +399,8 @@ export class CodexWorker {
       throw new Error(`Configured Codex runtime ${this.model ?? "default"}${this.reasoningEffort ? ` at ${this.reasoningEffort} effort` : ""} is unavailable for this ChatGPT account. MorAssistant will not silently downgrade.`);
     }
 
+    const selectedCapabilities = selectOnshapeCapabilities(prompt);
+    const liveFeatureContext = compactFeatureSpecContext(inspection.featureSpecs, selectedCapabilities);
     let featurePayloadBudget = 200_000;
     const dependencyById = new Map(inspection.dependencies.map((node) => [node.featureId, node]));
     const featureSnapshot = inspection.featureTree.features.map((feature) => {
@@ -421,7 +432,14 @@ export class CodexWorker {
         massPropertiesJson: boundedJson(inspection.massProperties, 40_000),
         topologyEvaluationJson: boundedJson(inspection.topologyEvaluation, 20_000)
       },
-      inspectionWarnings: inspection.warnings
+      inspectionWarnings: inspection.warnings,
+      capabilityCatalog: {
+        version: ONSHAPE_CAPABILITY_CATALOG_VERSION,
+        totalCapabilities: ONSHAPE_CAPABILITY_CATALOG.length,
+        completeInventory: capabilityInventoryText(),
+        relevantCurriculum: capabilityCurriculumText(prompt)
+      },
+      liveNativeFeatures: liveFeatureContext
     };
     const threadResponse = await this.request("thread/start", {
       ...(this.model ? { model: this.model } : {}),
@@ -433,6 +451,10 @@ export class CodexWorker {
       baseInstructions: [
         "You are a dependency-aware native Onshape Part Studio planning agent.",
         "Return only a structured plan matching the supplied schema.",
+        "The trusted host supplies an Onshape capability curriculum plus the current document's live feature specifications. Treat the live specifications and exact existing feature payloads as authoritative over memory.",
+        "The complete capability inventory covers sketch geometry, sketch constraints and editing, solid/surface/curve features, construction, patterns, sheet metal, frames, assemblies, inspection, and metadata. Read the relevant curriculum for prerequisites, method, and verification before choosing operations.",
+        "For native or custom features, use liveNativeFeatures.relevantFeatureSpecs to obtain exact current parameter definitions. availableFeatureTypes proves which feature types exist. If an exact required schema is absent and no exact exemplar exists in the snapshot, do not guess a payload; choose a supported construction or warn clearly.",
+        "This planner is currently applying changes to a Part Studio. Do not disguise assembly-only or UI-only actions as Part Studio feature mutations.",
         "Reason from the feature payloads, dependency graph, regeneration states, repeated expressions, topology, and mass properties provided by the trusted host.",
         "Do not modify or remove a feature without considering its usedBy downstream dependents. Surface any material downstream risk in warnings.",
         "For rename_feature and update_dimension, use only feature IDs, parameter IDs, names, and current expressions present in the snapshot.",
@@ -440,13 +462,14 @@ export class CodexWorker {
         "Use create_circle_sketch for native Top-plane circles. It takes a radius and center in millimeters and is the reliable first step for cylinders and round holes.",
         "Use extrude_sketch for blind solid extrudes from a named existing or earlier-created sketch. Set operation to NEW for a separate solid, ADD to join intersecting material, REMOVE to cut a hole or pocket, or INTERSECT to keep common material.",
         "Use fillet_feature_edges to fillet every solid edge created by a named existing or earlier-created feature. Choose a conservative radius smaller than the target's smallest plausible half-dimension.",
+        "Use chamfer_feature_edges to apply a native equal-offset chamfer to every solid edge created by a named existing or earlier-created feature. Set distanceMm conservatively and use it instead of create_feature whenever that selection scope matches the request.",
         "A cylinder is exactly create_circle_sketch followed by extrude_sketch with NEW. A round through-pocket is create_circle_sketch followed by extrude_sketch with REMOVE and a depth that passes through the target solid. Prefer these typed recipes over create_feature.",
         "For squares, widthMm and heightMm must be equal. When dimensions are omitted, choose clear deterministic sizes and mention the choice in warnings.",
         "Give every new sketch a unique descriptive name. Separate multiple rectangles with centerXmm and centerYmm so they do not overlap.",
         "For a feature not covered by a typed operation, use create_feature only when an exact native Onshape BTMFeature-134 or BTMSketch-151 payload can be derived from the supplied snapshot. Never guess a payload.",
         "create_feature supports standard sketches, variables, extrude, revolve, sweep, loft, fillet, chamfer, shell, hole, draft, rib, boolean, split, transform, patterns, mate connectors, and other valid Part Studio featureType payloads.",
         "When the user asks to make a model parametric, use repeatedExpressions as evidence: create well-named native variable features only with a valid exact payload, then replace matching literal quantity expressions with #variable references.",
-        "Use @feature:Exact Feature Name anywhere featureJson needs a featureId. Creation operations may reference features created earlier in the same ordered plan.",
+        "Use @feature:Exact Feature Name only as an entire JSON string value in a field that directly accepts a featureId. Never embed @feature inside queryString or an expression; the resolver cannot safely rewrite code strings and trusted validation rejects them. Creation operations may reference features created earlier in the same ordered plan.",
         "For a blind new-body extrude, use BTMFeature-134 featureType extrude with enum parameters bodyType=SOLID enumName=ExtendedToolBodyType, operationType=NEW enumName=NewBodyOperationType, a BTMParameterQueryList-148 entities query containing BTMIndividualSketchRegionQuery-140 whose featureId is @feature:Sketch Name, endBound=BLIND enumName=BoundingType, and a BTMParameterQuantity-147 depth expression with units. Include suppressed=false and returnAfterSubfeatures=false; the executor safely fills standard omitted BTM defaults and the resolved sketch-region query metadata.",
         "For a square pyramid, create or replace an extrude from the base square with hasDraft=true, draftAngle chosen from the base half-width and depth but slightly below the exact convergence angle, and draftPullDirection=false; include those as BTMParameterBoolean-144, BTMParameterQuantity-147 with degree units, and BTMParameterBoolean-144 parameters respectively.",
         "Use replace_feature with the exact featureHash from the snapshot to change a whole existing native feature, and preserve fields from featureJson that are not intentionally changed.",
@@ -505,6 +528,9 @@ export class CodexWorker {
           runtime,
           inspection: {
             featureCount: inspection.featureTree.features.length,
+            capabilityCount: ONSHAPE_CAPABILITY_CATALOG.length,
+            nativeFeatureTypeCount: liveFeatureContext.availableFeatureTypes.length,
+            capabilityCatalogVersion: ONSHAPE_CAPABILITY_CATALOG_VERSION,
             dependencyCount: inspection.dependencies.reduce((count, node) => count + node.dependsOn.length, 0),
             geometry: inspection.geometry,
             warnings: inspection.warnings

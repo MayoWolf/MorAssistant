@@ -26,6 +26,7 @@ import {
   OnshapeApiError,
   refreshOnshapeTokens,
   type FeatureListResponse,
+  type FeatureSpecsResponse,
   type OnshapeOAuthConfig,
   type OnshapeFeature,
   type PartStudioGeometryEvidence,
@@ -98,6 +99,7 @@ type PlanJob = {
 };
 const planJobs = new Map<string, PlanJob>();
 const geometryCache = new Map<string, { createdAt: number; evidence: PartStudioGeometryEvidence }>();
+const featureSpecsCache = new Map<string, { createdAt: number; specs: FeatureSpecsResponse }>();
 const sessionDatabasePath = env.SESSION_DB_PATH === ":memory:" ? env.SESSION_DB_PATH : resolve(repositoryRoot, env.SESSION_DB_PATH);
 const sessionStore = new SessionStore(sessionDatabasePath, env.SESSION_ENCRYPTION_KEY ?? randomBytes(32).toString("base64url"));
 const codexUsersRoot = resolve(repositoryRoot, env.CODEX_USERS_ROOT);
@@ -133,6 +135,29 @@ function geometryCacheKey(sessionId: string, context: PartStudioContext, tree: F
     context.configuration ?? "",
     tree.sourceMicroversion
   ])).digest("hex");
+}
+
+function featureSpecsCacheKey(sessionId: string, context: PartStudioContext, tree: FeatureListResponse): string {
+  return JSON.stringify([
+    createHash("sha256").update(sessionId).digest("hex"),
+    context.server ?? env.ONSHAPE_BASE_URL,
+    context.documentId,
+    context.workspaceId,
+    context.elementId,
+    context.configuration ?? "",
+    tree.libraryVersion ?? "current"
+  ]);
+}
+
+function pruneFeatureSpecsCache(now = Date.now()): void {
+  for (const [key, entry] of featureSpecsCache) {
+    if (now - entry.createdAt > 60 * 60_000) featureSpecsCache.delete(key);
+  }
+  while (featureSpecsCache.size > 100) {
+    const oldest = featureSpecsCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    featureSpecsCache.delete(oldest);
+  }
 }
 
 function partStudioSnapshotKey(context: PartStudioContext): string {
@@ -214,6 +239,7 @@ function treeFromMutationResponse(
     operation.type === "create_circle_sketch" ||
     operation.type === "extrude_sketch" ||
     operation.type === "fillet_feature_edges" ||
+    operation.type === "chamfer_feature_edges" ||
     operation.type === "create_feature") {
     if (!returnedFeature || typeof returnedFeature.featureId !== "string") return undefined;
     features.push(returnedFeature);
@@ -295,12 +321,29 @@ async function createStoredPlan(
     : undefined;
   const cachedGeometry = memoryGeometry ?? persistedGeometry;
   const rawInspection = await client.inspectPartStudio(body.context, featureTree, cachedGeometry);
+  pruneFeatureSpecsCache();
+  const specsKey = featureSpecsCacheKey(session.id, body.context, featureTree);
+  let featureSpecs = featureSpecsCache.get(specsKey)?.specs;
+  let featureSpecsWarning: string | undefined;
+  if (!featureSpecs) {
+    try {
+      featureSpecs = await client.getFeatureSpecs(body.context);
+      featureSpecsCache.set(specsKey, { createdAt: Date.now(), specs: featureSpecs });
+    } catch (error) {
+      featureSpecsWarning = isOnshapeRateLimit(error)
+        ? "Onshape's live feature specification catalog is temporarily rate-limited; the built-in MorAssistant tool curriculum remains available."
+        : "Onshape's live feature specification catalog was unavailable; the built-in MorAssistant tool curriculum remains available.";
+    }
+  }
   const snapshotWarning = rateLimitFallback
     ? `Onshape feature-list reads are temporarily rate-limited. Planning used the last encrypted, verified snapshot from ${new Date(storedSnapshot!.capturedAt).toLocaleString("en-US", { timeZone: "UTC" })} UTC; execution will retain the snapshot's microversion guard.`
     : undefined;
-  const inspection = snapshotWarning
-    ? { ...rawInspection, warnings: [...rawInspection.warnings, snapshotWarning] }
-    : rawInspection;
+  const additionalWarnings = [snapshotWarning, featureSpecsWarning].filter((warning): warning is string => Boolean(warning));
+  const inspection = {
+    ...rawInspection,
+    ...(featureSpecs ? { featureSpecs } : {}),
+    warnings: [...rawInspection.warnings, ...additionalWarnings]
+  };
   if (cacheKey && !cachedGeometry && inspection.warnings.length === 0) {
     const evidence = geometryEvidence(inspection);
     if (JSON.stringify(evidence).length <= 750_000) geometryCache.set(cacheKey, { createdAt: Date.now(), evidence });
@@ -331,6 +374,9 @@ async function createStoredPlan(
         ...(planning.runtime.serviceTier ? { serviceTier: planning.runtime.serviceTier } : {})
       },
       featureCount: planning.inspection.featureCount,
+      capabilityCount: planning.inspection.capabilityCount,
+      nativeFeatureTypeCount: planning.inspection.nativeFeatureTypeCount,
+      capabilityCatalogVersion: planning.inspection.capabilityCatalogVersion,
       dependencyCount: planning.inspection.dependencyCount,
       geometry: planning.inspection.geometry,
       inspectionWarnings: planning.inspection.warnings

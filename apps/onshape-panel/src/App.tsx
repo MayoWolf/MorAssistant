@@ -113,6 +113,7 @@ function operationTitle(operation: PlanOperation): string {
     case "create_circle_sketch": return "Create circle sketch";
     case "extrude_sketch": return "Extrude sketch";
     case "fillet_feature_edges": return "Fillet feature edges";
+    case "chamfer_feature_edges": return "Chamfer feature edges";
     case "create_feature": return "Create native feature";
     case "replace_feature": return "Replace native feature";
     case "delete_feature": return "Delete feature";
@@ -133,6 +134,8 @@ function OperationDetail({ operation }: { operation: PlanOperation }) {
       return <p><code>{operation.sourceFeatureName}</code><i>→</i><code>{operation.featureName} · {operation.depthMm} mm · {operation.operation}</code></p>;
     case "fillet_feature_edges":
       return <p><code>{operation.targetFeatureName}</code><i>→</i><code>{operation.featureName} · R{operation.radiusMm} mm</code></p>;
+    case "chamfer_feature_edges":
+      return <p><code>{operation.targetFeatureName}</code><i>→</i><code>{operation.featureName} · {operation.distanceMm} mm</code></p>;
     case "create_feature":
       return <p><code>{operation.featureName}</code><i>·</i><code>{operation.featureType}</code></p>;
     case "replace_feature":
@@ -319,6 +322,8 @@ export function App() {
       </div>
       {plan.agentTrace && <div className="agent-trace" aria-label="Model inspection summary">
         <span><strong>{plan.agentTrace.featureCount}</strong><small>features read</small></span>
+        <span><strong>{plan.agentTrace.capabilityCount ?? "—"}</strong><small>CAD tools learned</small></span>
+        <span><strong>{plan.agentTrace.nativeFeatureTypeCount ?? "—"}</strong><small>live feature types</small></span>
         <span><strong>{plan.agentTrace.dependencyCount}</strong><small>dependency links</small></span>
         <span><strong>{plan.agentTrace.geometry.solidBodyCount ?? plan.agentTrace.geometry.partCount ?? "—"}</strong><small>solid bodies</small></span>
         <span><strong>{plan.agentTrace.planningAttempts}</strong><small>validation pass{plan.agentTrace.planningAttempts === 1 ? "" : "es"}</small></span>

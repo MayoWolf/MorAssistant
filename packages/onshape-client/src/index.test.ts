@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildOnshapeAuthorizationUrl,
   buildFeatureDependencyGraph,
+  buildChamferFeature,
   buildCircleSketchFeature,
   buildExtrudeFeature,
   buildFilletFeature,
@@ -159,6 +160,24 @@ describe("Onshape feature edits", () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("configuration=Length%3D0.1+meter");
   });
 
+  it("reads the live feature specification catalog for the active Part Studio", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      featureSpecs: [{ featureType: "sweep", featureName: "Sweep" }]
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new OnshapeClient({ accessToken: () => "token" });
+    await expect(client.getFeatureSpecs({
+      documentId: "d",
+      workspaceId: "w",
+      elementId: "e",
+      configuration: "Size=Large"
+    })).resolves.toMatchObject({ featureSpecs: [{ featureType: "sweep" }] });
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/featurespecs?rollbackBarIndex=-1&configuration=Size%3DLarge");
+  });
+
   it("preserves the full feature payload when renaming", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({
@@ -215,7 +234,7 @@ describe("Onshape feature edits", () => {
     expect(feature.entities.every((entity) => !/[-_]/u.test(entity.nodeId))).toBe(true);
   });
 
-  it("builds native circle, blind extrude, and feature-edge fillet payloads", () => {
+  it("builds native circle, blind extrude, fillet, and chamfer payloads", () => {
     const circle = buildCircleSketchFeature({
       name: "Cylinder profile",
       radiusMm: 12,
@@ -257,9 +276,24 @@ describe("Onshape feature edits", () => {
       expect.objectContaining({ parameterId: "tangentPropagation", value: true })
     ]));
     expect(JSON.stringify(fillet)).toContain('qTransient(\\"JLB\\")');
+
+    const chamfer = buildChamferFeature({
+      name: "Beveled cylinder",
+      edgeTransientIds: ["JLB", "JLF"],
+      distanceMm: 1,
+      tangentPropagation: false
+    }) as Record<string, unknown> & { parameters: Array<Record<string, unknown>> };
+    expect(chamfer).toMatchObject({ btType: "BTMFeature-134", name: "Beveled cylinder", featureType: "chamfer" });
+    expect(chamfer.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ parameterId: "chamferMethod", enumName: "ChamferMethod", value: "FACE_OFFSET" }),
+      expect.objectContaining({ parameterId: "chamferType", enumName: "ChamferType", value: "EQUAL_OFFSETS" }),
+      expect.objectContaining({ parameterId: "width", expression: "1 mm" }),
+      expect.objectContaining({ parameterId: "tangentPropagation", value: false })
+    ]));
+    expect(JSON.stringify(chamfer)).toContain('qTransient(\\"JLF\\")');
   });
 
-  it("executes typed circle, extrude, and fillet operations with guarded mutations", async () => {
+  it("executes typed circle, extrude, fillet, and chamfer operations with guarded mutations", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ feature: { featureId: "sketch1" } }), {
         status: 200,
@@ -282,6 +316,22 @@ describe("Onshape feature edits", () => {
         headers: { "content-type": "application/json" }
       }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ feature: { featureId: "fillet1" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        result: {
+          btType: "com.belmonttech.serialize.fsvalue.BTFSValueArray",
+          value: [
+            { btType: "com.belmonttech.serialize.fsvalue.BTFSValueString", value: "JLB" },
+            { btType: "com.belmonttech.serialize.fsvalue.BTFSValueString", value: "JLF" }
+          ]
+        }
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ feature: { featureId: "chamfer1" } }), {
         status: 200,
         headers: { "content-type": "application/json" }
       }));
@@ -317,14 +367,23 @@ describe("Onshape feature edits", () => {
       tangentPropagation: true,
       reason: "Round"
     }, { ...concurrency, features: [{ featureId: "extrude1", name: "Cylinder body", featureType: "extrude" }] });
+    await client.applyOperationDetailed(context, {
+      type: "chamfer_feature_edges",
+      featureName: "Beveled cylinder",
+      targetFeatureName: "Cylinder body",
+      distanceMm: 1,
+      tangentPropagation: false,
+      reason: "Bevel"
+    }, { ...concurrency, features: [{ featureId: "extrude1", name: "Cylinder body", featureType: "extrude" }] });
 
-    expect(fetchMock).toHaveBeenCalledTimes(4);
-    for (const call of [fetchMock.mock.calls[0], fetchMock.mock.calls[1], fetchMock.mock.calls[3]]) {
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    for (const call of [fetchMock.mock.calls[0], fetchMock.mock.calls[1], fetchMock.mock.calls[3], fetchMock.mock.calls[5]]) {
       if (!call) throw new Error("Expected mutation request");
       const body = JSON.parse(String((call[1] as RequestInit).body));
       expect(body).toMatchObject({ serializationVersion: "1.2.30", sourceMicroversion: "m1", rejectMicroversionSkew: true });
     }
     expect(String(fetchMock.mock.calls[2]?.[0])).toContain("/featurescript?rollbackBarIndex=-1");
+    expect(String(fetchMock.mock.calls[4]?.[0])).toContain("/featurescript?rollbackBarIndex=-1");
   });
 
   it("creates a rectangle sketch with a microversion guard", async () => {
