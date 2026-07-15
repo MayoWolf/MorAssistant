@@ -1,9 +1,11 @@
 import { randomBytes } from "node:crypto";
+import { sketchPlaneFilter, standardPlaneQuery, type StandardPlane } from "./standard-planes.js";
 
 export type ExtrudeOperation = "NEW" | "ADD" | "REMOVE" | "INTERSECT";
 
 export interface CircleSketchInput {
   name: string;
+  plane: StandardPlane;
   radiusMm: number;
   centerXmm: number;
   centerYmm: number;
@@ -16,6 +18,8 @@ export interface ExtrudeFeatureInput {
   operation: ExtrudeOperation;
   oppositeDirection: boolean;
   symmetric: boolean;
+  startOffsetMm: number;
+  startOffsetOppositeDirection: boolean;
 }
 
 export interface FilletFeatureInput {
@@ -78,30 +82,6 @@ function quantityParameter(parameterId: string, expression: string): Record<stri
     parameterName: ""
   };
 }
-
-const topPlaneQuery = "query=qCompressed(1.0,\"%B5$QueryM4Sa$entityTypeBa$EntityTypeS4$FACESb$historyTypeS8$CREATIONSb$operationIdB2$IdA1S3.7$TopplaneOpS9$queryTypeS5$DUMMY\",id);";
-
-const topPlaneFilter = {
-  btType: "BTOrFilter-167",
-  operand1: {
-    btType: "BTOrFilter-167",
-    operand1: {
-      btType: "BTAndFilter-110",
-      operand1: { btType: "BTGeometryFilter-130", geometryType: "PLANE" },
-      operand2: { btType: "BTFlatSheetMetalFilter-3018", allows: "MODEL_ONLY" }
-    },
-    operand2: {
-      btType: "BTAndFilter-110",
-      operand1: {
-        btType: "BTAndFilter-110",
-        operand1: { btType: "BTSMDefinitionEntityTypeFilter-1651", smDefinitionEntityType: "FACE" },
-        operand2: { btType: "BTFlatSheetMetalFilter-3018", allows: "MODEL_AND_FLATTENED" }
-      },
-      operand2: { btType: "BTGeometryFilter-130", geometryType: "PLANE" }
-    }
-  },
-  operand2: { btType: "BTBodyTypeFilter-112", bodyType: "MATE_CONNECTOR" }
-};
 
 const sketchRegionFilter = {
   btType: "BTAndFilter-110",
@@ -201,7 +181,7 @@ function featureRoot(name: string, featureType: string, parameters: Array<Record
   };
 }
 
-/** Build a native Top-plane circle sketch using the payload shape emitted by Onshape API v16. */
+/** Build a native circle sketch on a standard datum plane using Onshape API v16. */
 export function buildCircleSketchFeature(input: CircleSketchInput): Record<string, unknown> {
   const entityId = `circle${randomBytes(8).toString("hex")}`;
   return {
@@ -239,13 +219,7 @@ export function buildCircleSketchFeature(input: CircleSketchInput): Record<strin
     namespace: "",
     name: input.name,
     parameters: [
-      queryList("sketchPlane", [{
-        btType: "BTMIndividualQuery-138",
-        queryStatement: null,
-        queryString: topPlaneQuery,
-        nodeId: objectId(),
-        deterministicIds: ["JDC"]
-      }], topPlaneFilter),
+      queryList("sketchPlane", [standardPlaneQuery(input.plane, objectId())], sketchPlaneFilter),
       booleanParameter("disableImprinting", false)
     ],
     nodeId: objectId(),
@@ -275,6 +249,10 @@ export function buildExtrudeFeature(input: ExtrudeFeatureInput): Record<string, 
     enumParameter("endBound", "BoundingType", "BLIND"),
     booleanParameter("oppositeDirection", input.oppositeDirection),
     quantityParameter("depth", `${input.depthMm} mm`),
+    booleanParameter("startOffset", input.startOffsetMm > 0),
+    enumParameter("startOffsetBound", "StartOffsetType", "BLIND"),
+    quantityParameter("startOffsetDistance", `${input.startOffsetMm} mm`),
+    booleanParameter("startOffsetOppositeDirection", input.startOffsetOppositeDirection),
     booleanParameter("symmetric", input.symmetric),
     booleanParameter("hasDraft", false),
     booleanParameter("defaultScope", !isNew),

@@ -91,6 +91,36 @@ function planFromInput(params) {
       requiresApproval: true
     };
   }
+  if (/toy car spatial regression/i.test(userRequest)) {
+    const wheelSketches = [-35, 35].map((centerXmm, index) => ({
+      type: "create_circle_sketch",
+      sketchName: index === 0 ? "Spatial Rear Wheel Profile" : "Spatial Front Wheel Profile",
+      plane: "Front",
+      radiusMm: 12,
+      centerXmm,
+      centerYmm: 12,
+      reason: "Orient the wheel profile normal to the Y axle direction"
+    }));
+    const wheelExtrudes = wheelSketches.flatMap((sketch) => [false, true].map((oppositeDirection) => ({
+      type: "extrude_sketch",
+      featureName: `${sketch.sketchName} ${oppositeDirection ? "Left" : "Right"}`,
+      sourceFeatureName: sketch.sketchName,
+      depthMm: 6,
+      operation: "NEW",
+      oppositeDirection,
+      symmetric: false,
+      startOffsetMm: 22,
+      startOffsetOppositeDirection: oppositeDirection,
+      reason: "Create a separate wheel outside the matching chassis side"
+    })));
+    return {
+      summary: "Create four correctly oriented and offset toy-car wheels",
+      risk: "medium",
+      operations: [...wheelSketches, ...wheelExtrudes],
+      warnings: ["The test uses X longitudinal, Y axle direction, and Z up."],
+      requiresApproval: true
+    };
+  }
   if (/extrude/i.test(userRequest)) {
     const sketch = snapshot.find((item) => item?.featureType === "newSketch");
     if (!sketch?.name) throw new Error("The fake planner needs a sketch to extrude.");
@@ -235,6 +265,9 @@ lines.on("line", (line) => {
       case "thread/start": {
         if (request.params?.sandbox !== "read-only") {
           throw new Error("thread/start must use the Codex SandboxMode spelling read-only");
+        }
+        if (!String(request.params?.baseInstructions).includes("Wheel circles therefore belong on the Front plane")) {
+          throw new Error("thread/start must teach explicit vehicle coordinate frames and wheel orientation");
         }
         const id = `thread-${++threadCounter}`;
         send({

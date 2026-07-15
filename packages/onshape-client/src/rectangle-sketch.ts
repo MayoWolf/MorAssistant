@@ -1,7 +1,9 @@
 import { randomBytes } from "node:crypto";
+import { sketchPlaneFilter, standardPlaneQuery, type StandardPlane } from "./standard-planes.js";
 
 export interface RectangleSketchInput {
   name: string;
+  plane: StandardPlane;
   widthMm: number;
   heightMm: number;
   centerXmm: number;
@@ -89,8 +91,6 @@ function constraint(
   };
 }
 
-const topPlaneQuery = "query=qCompressed(1.0,\"%B5$QueryM4Sa$entityTypeBa$EntityTypeS4$FACESb$historyTypeS8$CREATIONSb$operationIdB2$IdA1S3.7$TopplaneOpS9$queryTypeS5$DUMMY\",id);";
-
 /**
  * Build the internal sketch feature format accepted by addPartStudioFeature.
  * The shape is based on a rectangle captured from Onshape API v15; coordinates
@@ -160,34 +160,8 @@ export function buildRectangleSketchFeature(input: RectangleSketchInput): Record
       {
         btType: "BTMParameterQueryList-148",
         libraryRelationType: "DEFAULT",
-        queries: [{
-          btType: "BTMIndividualQuery-138",
-          queryStatement: null,
-          queryString: topPlaneQuery,
-          nodeId: objectId(),
-          deterministicIds: ["JDC"]
-        }],
-        filter: {
-          btType: "BTOrFilter-167",
-          operand1: {
-            btType: "BTOrFilter-167",
-            operand1: {
-              btType: "BTAndFilter-110",
-              operand1: { btType: "BTGeometryFilter-130", geometryType: "PLANE" },
-              operand2: { btType: "BTFlatSheetMetalFilter-3018", allows: "MODEL_ONLY" }
-            },
-            operand2: {
-              btType: "BTAndFilter-110",
-              operand1: {
-                btType: "BTAndFilter-110",
-                operand1: { btType: "BTSMDefinitionEntityTypeFilter-1651", smDefinitionEntityType: "FACE" },
-                operand2: { btType: "BTFlatSheetMetalFilter-3018", allows: "MODEL_AND_FLATTENED" }
-              },
-              operand2: { btType: "BTGeometryFilter-130", geometryType: "PLANE" }
-            }
-          },
-          operand2: { btType: "BTBodyTypeFilter-112", bodyType: "MATE_CONNECTOR" }
-        },
+        queries: [standardPlaneQuery(input.plane, objectId())],
+        filter: sketchPlaneFilter,
         nodeId: objectId(),
         parameterId: "sketchPlane",
         parameterName: ""

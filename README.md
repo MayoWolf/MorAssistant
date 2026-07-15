@@ -108,6 +108,7 @@ Example prompts:
 Create five sketches, all different-size squares on the Top plane
 Create a 25 mm × 40 mm rectangle sketch named Mounting Profile
 Extrude Mounting Profile 15 mm as a new body
+Create a toy car with four separate wheels whose axles run left-to-right
 Add a 3 mm fillet to the outer edges of Base Extrusion
 Rename Sketch 1 to Base Profile
 Rename Extrude 1 to Base Extrusion
@@ -125,9 +126,9 @@ MorAssistant now uses two complementary knowledge layers. The versioned **177-to
 | Read the active Part Studio model | ✅ | Feature payload, dependency, topology, mass-property, and rebuild inspection |
 | Evaluate FeatureScript for geometry analysis | ✅ | Read-only lambda evaluation; no persistent mutation |
 | Self-correct an invalid generated plan | ✅ | Up to three schema + live feature-tree validation passes |
-| Create rectangle and square sketches on Top | ✅ | Typed millimeter geometry, unique names, captured v15 payload fixture |
-| Create circle sketches on Top | ✅ | Native v16 circle payload with millimeter-to-meter conversion |
-| Build cylinders and blind extrudes | ✅ | Typed `NEW`, `ADD`, `REMOVE`, and `INTERSECT` solid operations |
+| Create rectangle, square, and circle sketches in 3D | ✅ | Typed Top, Front, and Right datum-plane geometry with explicit world-axis mapping |
+| Build cylinders and blind/offset extrudes | ✅ | Typed `NEW`, `ADD`, `REMOVE`, and `INTERSECT` operations with direction, symmetry, and starting offset |
+| Validate real-world spatial intent | ✅ | Axis, side, symmetry, clearance, and proportion reasoning plus deterministic bilateral wheel compilation and a hard vehicle-orientation check |
 | Cut round holes and pockets | ✅ | Circle + guarded `REMOVE` extrude recipe |
 | Fillet feature-created edges | ✅ | FeatureScript resolves live edge transient IDs, then native fillet input is regenerated and verified |
 | Chamfer feature-created edges | ✅ | FeatureScript resolves current edges, then a typed equal-offset native chamfer is compiled and verified |
@@ -146,7 +147,7 @@ MorAssistant now uses two complementary knowledge layers. The versioned **177-to
 | Edit dimensions in custom configurations | Refused | Renames remain available; ambiguous configured edits fail closed |
 | Assemblies, drawings, releases, and document administration | Roadmap | The current extension is intentionally scoped to the active Part Studio |
 
-Common operations use dedicated typed builders. For a cylinder, Sol emits a circle sketch and an extrude—not an opaque blob. For a round hole, it emits the same profile plus a `REMOVE` extrude. Fillets and chamfers add one read-only FeatureScript selection pass because Onshape’s native Feature API requires current edge transient IDs; those IDs are resolved immediately before the guarded mutation.
+Common operations use dedicated typed builders. For a cylinder, Sol emits a circle sketch on the plane normal to the desired axis and an extrude—not an opaque blob. Starting offsets allow separated geometry on either side of a center plane, including four real toy-car wheels instead of vertical cylinders or full-width rollers. A deterministic spatial compiler pairs vehicle wheels across both chassis sides instead of trusting sampled direction booleans. For a round hole, the agent emits a circular profile plus a `REMOVE` extrude. Fillets and chamfers add one read-only FeatureScript selection pass because Onshape’s native Feature API requires current edge transient IDs; those IDs are resolved immediately before the guarded mutation.
 
 Everything else in the active Part Studio can use the bounded native-feature fallback: Codex proposes the exact payload, the panel labels it as a native operation, the API validates its structure and references, and Onshape performs final feature validation after approval. Assemblies, drawings, release workflows, and persistent custom FeatureScript definitions need their own element-specific APIs and are not silently treated as Part Studio operations.
 

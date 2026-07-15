@@ -6,7 +6,9 @@ import { createInterface } from "node:readline";
 import {
   CAD_PLAN_JSON_SCHEMA,
   cadPlanSchema,
+  compilePlanSpatialIntent,
   normalizeCadPlanOutput,
+  validatePlanAgainstIntent,
   validatePlanAgainstFeatureTree,
   type CadPlan
 } from "@morassistant/cad-command-schema";
@@ -458,12 +460,16 @@ export class CodexWorker {
         "Reason from the feature payloads, dependency graph, regeneration states, repeated expressions, topology, and mass properties provided by the trusted host.",
         "Do not modify or remove a feature without considering its usedBy downstream dependents. Surface any material downstream risk in warnings.",
         "For rename_feature and update_dimension, use only feature IDs, parameter IDs, names, and current expressions present in the snapshot.",
-        "You may create new axis-aligned rectangle or square sketches with create_rectangle_sketch; it needs no existing feature ID and currently supports only the Top plane.",
-        "Use create_circle_sketch for native Top-plane circles. It takes a radius and center in millimeters and is the reliable first step for cylinders and round holes.",
-        "Use extrude_sketch for blind solid extrudes from a named existing or earlier-created sketch. Set operation to NEW for a separate solid, ADD to join intersecting material, REMOVE to cut a hole or pocket, or INTERSECT to keep common material.",
+        "Typed rectangle and circle sketches support Top, Front, and Right datum planes. Sketch coordinates map to world axes as follows: Top=(X,Y), normal Z; Front=(X,Z), normal Y; Right=(Y,Z), normal X. The normal of the profile plane is the axis of a circle extrusion. Onshape's Front datum normal points toward world -Y, so an opposite Front start offset or extrusion points toward +Y.",
+        "Use create_rectangle_sketch for axis-aligned profiles and create_circle_sketch for circular profiles. Choose the plane from the intended 3D orientation, never from whichever typed path is easiest.",
+        "Use extrude_sketch for blind solid extrudes from a named existing or earlier-created sketch. Set operation to NEW for a separate solid, ADD to join intersecting material, REMOVE to cut a hole or pocket, or INTERSECT to keep common material. startOffsetMm moves the beginning away from the sketch plane; 0 disables it. startOffsetOppositeDirection selects the offset side.",
         "Use fillet_feature_edges to fillet every solid edge created by a named existing or earlier-created feature. Choose a conservative radius smaller than the target's smallest plausible half-dimension.",
         "Use chamfer_feature_edges to apply a native equal-offset chamfer to every solid edge created by a named existing or earlier-created feature. Set distanceMm conservatively and use it instead of create_feature whenever that selection scope matches the request.",
         "A cylinder is exactly create_circle_sketch followed by extrude_sketch with NEW. A round through-pocket is create_circle_sketch followed by extrude_sketch with REMOVE and a depth that passes through the target solid. Prefer these typed recipes over create_feature.",
+        "Before emitting operations, establish a world coordinate frame and check every axis, side, ground contact, symmetry pair, and relative proportion. A locally valid feature is not acceptable when the assembled object is physically or visually wrong.",
+        "For ordinary vehicles use Z up, X front-to-rear, and Y left-to-right/axle direction. Wheel circles therefore belong on the Front plane and are extruded along Y. Put two circle profiles at distinct front/rear X positions and wheel-radius Z height. For each profile create separate NEW extrudes outward beyond the lower-Y and upper-Y chassis sides. Compute each start-offset sign from its absolute world Y coordinate and the extrusion direction from the outward side; those booleans can differ when the vehicle is translated away from the global origin. Never use Top-plane wheel circles or full-width cylindrical rollers.",
+        "Apply real-world priors when dimensions are omitted: preserve recognizable proportions, bilateral symmetry, clearance, support/contact, and non-interference. State inferred dimensions in warnings, but do not use missing dimensions as permission to choose an implausible orientation.",
+        "For sweeps, the profile plane should normally be perpendicular to the path at its start; for revolves, verify the axis lies in the profile plane; for holes, ribs, drafts, patterns, and mates, verify the feature direction and target scope in world coordinates.",
         "For squares, widthMm and heightMm must be equal. When dimensions are omitted, choose clear deterministic sizes and mention the choice in warnings.",
         "Give every new sketch a unique descriptive name. Separate multiple rectangles with centerXmm and centerYmm so they do not overlap.",
         "For a feature not covered by a typed operation, use create_feature only when an exact native Onshape BTMFeature-134 or BTMSketch-151 payload can be derived from the supplied snapshot. Never guess a payload.",
@@ -515,11 +521,15 @@ export class CodexWorker {
         } catch {
           throw new Error("The response was not valid JSON.");
         }
+        const compiledPlan = compilePlanSpatialIntent(
+          prompt,
+          cadPlanSchema.parse(normalizeCadPlanOutput(parsed))
+        );
         const plan = dependencyWarnings(
-          validatePlanAgainstFeatureTree(
-            cadPlanSchema.parse(normalizeCadPlanOutput(parsed)),
+          validatePlanAgainstIntent(prompt, validatePlanAgainstFeatureTree(
+            compiledPlan,
             featureTreeWithHashes
-          ),
+          )),
           inspection.dependencies
         );
         return {

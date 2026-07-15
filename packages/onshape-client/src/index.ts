@@ -21,6 +21,7 @@ export {
 } from "./capability-catalog.js";
 
 export { buildRectangleSketchFeature } from "./rectangle-sketch.js";
+export { type StandardPlane } from "./standard-planes.js";
 export {
   buildCircleSketchFeature,
   buildChamferFeature,
@@ -688,13 +689,14 @@ export class OnshapeClient {
       }
       const response = await this.addFeature(context, buildRectangleSketchFeature({
         name: operation.sketchName,
+        plane: operation.plane,
         widthMm: operation.widthMm,
         heightMm: operation.heightMm,
         centerXmm: operation.centerXmm,
         centerYmm: operation.centerYmm
       }), tree);
       return {
-        message: `Created ${operation.sketchName}: ${operation.widthMm} mm × ${operation.heightMm} mm on the Top plane.`,
+        message: `Created ${operation.sketchName}: ${operation.widthMm} mm × ${operation.heightMm} mm on the ${operation.plane} plane.`,
         response
       };
     }
@@ -705,12 +707,13 @@ export class OnshapeClient {
       }
       const response = await this.addFeature(context, buildCircleSketchFeature({
         name: operation.sketchName,
+        plane: operation.plane,
         radiusMm: operation.radiusMm,
         centerXmm: operation.centerXmm,
         centerYmm: operation.centerYmm
       }), tree);
       return {
-        message: `Created ${operation.sketchName}: Ø${operation.radiusMm * 2} mm on the Top plane.`,
+        message: `Created ${operation.sketchName}: Ø${operation.radiusMm * 2} mm on the ${operation.plane} plane.`,
         response
       };
     }
@@ -730,11 +733,13 @@ export class OnshapeClient {
         depthMm: operation.depthMm,
         operation: operation.operation,
         oppositeDirection: operation.oppositeDirection,
-        symmetric: operation.symmetric
+        symmetric: operation.symmetric,
+        startOffsetMm: operation.startOffsetMm,
+        startOffsetOppositeDirection: operation.startOffsetOppositeDirection
       }), tree);
       const verb = operation.operation === "REMOVE" ? "Cut" : operation.operation === "ADD" ? "Added" : "Extruded";
       return {
-        message: `${verb} ${operation.sourceFeatureName} by ${operation.depthMm} mm as ${operation.featureName} (${operation.operation}).`,
+        message: `${verb} ${operation.sourceFeatureName} by ${operation.depthMm} mm${operation.startOffsetMm > 0 ? ` after a ${operation.startOffsetMm} mm start offset` : ""} as ${operation.featureName} (${operation.operation}).`,
         response
       };
     }

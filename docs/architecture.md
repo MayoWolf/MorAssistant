@@ -110,8 +110,9 @@ The same planning thread gets exact trusted-host feedback and the complete model
 The operation language currently includes:
 
 - guarded rename and quantity-expression edits;
-- typed Top-plane rectangle/square and circle sketch builders;
-- typed blind `NEW`, `ADD`, `REMOVE`, and `INTERSECT` extrudes;
+- typed Top/Front/Right rectangle, square, and circle sketch builders with explicit world-axis semantics;
+- typed blind and starting-offset `NEW`, `ADD`, `REMOVE`, and `INTERSECT` extrudes;
+- a deterministic spatial compiler plus narrow semantic validators for unambiguous physical intent, including four-wheel vehicle axes, bilateral sides, and separation;
 - typed feature-edge fillets with live transient-ID resolution;
 - typed equal-offset feature-edge chamfers with live transient-ID resolution;
 - bounded creation of native `BTMFeature-134` and `BTMSketch-151` payloads;

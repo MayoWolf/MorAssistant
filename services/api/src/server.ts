@@ -11,6 +11,7 @@ import Fastify, { LogController, type FastifyReply, type FastifyRequest } from "
 import { z } from "zod";
 import {
   cadPlanSchema,
+  validatePlanAgainstIntent,
   validatePlanAgainstFeatureTree,
   type CadOperation,
   type OperationExecutionResult,
@@ -353,7 +354,7 @@ async function createStoredPlan(
   }
   const planning = await workers.forUser(session.id).createPlan(body.prompt, inspection);
   const plan = cadPlanSchema.parse(planning.plan);
-  validatePlanAgainstFeatureTree(plan, featuresWithHashes(featureTree.features));
+  validatePlanAgainstIntent(body.prompt, validatePlanAgainstFeatureTree(plan, featuresWithHashes(featureTree.features)));
   if (body.context.configuration && plan.operations.some((operation) => operation.type === "update_dimension")) {
     throw new HttpError(409, "Dimension edits in configured Part Studios are not supported yet. Rename operations remain available.");
   }
@@ -931,7 +932,7 @@ app.post("/api/plans/:id/apply", async (request, reply) => {
     if (plan.sourceMicroversion && currentTree.sourceMicroversion !== plan.sourceMicroversion) {
       throw new Error("The Part Studio changed after the plan preview. Create a fresh plan before applying changes.");
     }
-    validatePlanAgainstFeatureTree(plan, featuresWithHashes(currentTree.features));
+    validatePlanAgainstIntent(plan.prompt, validatePlanAgainstFeatureTree(plan, featuresWithHashes(currentTree.features)));
     preexistingRegenerationErrors = client.regenerationErrors(currentTree);
   } catch (error) {
     plan.status = "pending";

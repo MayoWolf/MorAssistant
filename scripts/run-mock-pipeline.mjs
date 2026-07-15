@@ -200,10 +200,10 @@ const onshape = createServer(async (request, response) => {
         && parameters.get("bodyType")?.enumName === "ExtendedToolBodyType"
         && parameters.get("operationType")?.enumName === "NewBodyOperationType"
         && parameters.get("endBound")?.enumName === "BoundingType"
-        && parameters.get("oppositeDirection")?.value === false
+        && typeof parameters.get("oppositeDirection")?.value === "boolean"
         && parameters.get("symmetric")?.value === false
         && region?.btType === "BTMIndividualSketchRegionQuery-140"
-        && region?.deterministicIds?.[0] === "JOC"
+        && typeof region?.deterministicIds?.[0] === "string"
         && typeof region?.queryString === "string";
       if (!canonicalExtrude) return json(response, 400, { message: "non-canonical extrude fixture" });
     }

@@ -3,6 +3,7 @@ import type { PartStudioContext } from "@morassistant/shared-types";
 
 const safeId = z.string().min(1).max(200);
 const featureJson = z.string().min(2).max(100_000);
+const standardPlane = z.enum(["Top", "Front", "Right"]);
 
 function inspectJsonValue(value: unknown, depth: number, counter: { nodes: number }): void {
   counter.nodes += 1;
@@ -96,7 +97,7 @@ export const updateDimensionOperationSchema = z.object({
 export const createRectangleSketchOperationSchema = z.object({
   type: z.literal("create_rectangle_sketch"),
   sketchName: z.string().trim().min(1).max(100),
-  plane: z.literal("Top"),
+  plane: standardPlane,
   widthMm: z.number().finite().min(0.1).max(10_000),
   heightMm: z.number().finite().min(0.1).max(10_000),
   centerXmm: z.number().finite().min(-100_000).max(100_000),
@@ -107,7 +108,7 @@ export const createRectangleSketchOperationSchema = z.object({
 export const createCircleSketchOperationSchema = z.object({
   type: z.literal("create_circle_sketch"),
   sketchName: z.string().trim().min(1).max(100),
-  plane: z.literal("Top"),
+  plane: standardPlane,
   radiusMm: z.number().finite().min(0.05).max(10_000),
   centerXmm: z.number().finite().min(-100_000).max(100_000),
   centerYmm: z.number().finite().min(-100_000).max(100_000),
@@ -122,6 +123,8 @@ export const extrudeSketchOperationSchema = z.object({
   operation: z.enum(["NEW", "ADD", "REMOVE", "INTERSECT"]),
   oppositeDirection: z.boolean(),
   symmetric: z.boolean(),
+  startOffsetMm: z.number().finite().min(0).max(100_000),
+  startOffsetOppositeDirection: z.boolean(),
   reason: z.string().min(1).max(500)
 }).strict();
 
@@ -364,6 +367,8 @@ export const CAD_PLAN_JSON_SCHEMA = {
           "operation",
           "oppositeDirection",
           "symmetric",
+          "startOffsetMm",
+          "startOffsetOppositeDirection",
           "targetFeatureName",
           "tangentPropagation",
           "currentFeatureHash",
@@ -424,8 +429,8 @@ export const CAD_PLAN_JSON_SCHEMA = {
           },
           plane: {
             type: ["string", "null"],
-            enum: ["Top", null],
-            description: "Top for create_rectangle_sketch; null for other operation types."
+            enum: ["Top", "Front", "Right", null],
+            description: "Datum plane for typed rectangle or circle sketches. Coordinates are X/Y on Top, X/Z on Front, and Y/Z on Right; null otherwise."
           },
           widthMm: {
             type: ["number", "null"],
@@ -486,6 +491,16 @@ export const CAD_PLAN_JSON_SCHEMA = {
           symmetric: {
             type: ["boolean", "null"],
             description: "Whether extrude_sketch is symmetric about the sketch plane; null otherwise."
+          },
+          startOffsetMm: {
+            type: ["number", "null"],
+            minimum: 0,
+            maximum: 100_000,
+            description: "Distance from the sketch plane to the start of an extrude. Use 0 for no offset; null outside extrude_sketch."
+          },
+          startOffsetOppositeDirection: {
+            type: ["boolean", "null"],
+            description: "Whether the extrude start offset lies opposite the sketch normal; null outside extrude_sketch."
           },
           targetFeatureName: {
             type: ["string", "null"],
@@ -586,6 +601,8 @@ export function normalizeCadPlanOutput(input: unknown): unknown {
           operation: value.operation,
           oppositeDirection: value.oppositeDirection,
           symmetric: value.symmetric,
+          startOffsetMm: value.startOffsetMm,
+          startOffsetOppositeDirection: value.startOffsetOppositeDirection,
           reason: value.reason
         };
       }
@@ -640,6 +657,172 @@ export function normalizeCadPlanOutput(input: unknown): unknown {
       return operation;
     })
   };
+}
+
+type CircleSketchOperation = Extract<CadOperation, { type: "create_circle_sketch" }>;
+type RectangleSketchOperation = Extract<CadOperation, { type: "create_rectangle_sketch" }>;
+type ExtrudeSketchOperation = Extract<CadOperation, { type: "extrude_sketch" }>;
+
+function isFourWheelVehiclePrompt(prompt: string): boolean {
+  return /\b(car|truck|automobile|go-?kart|four[- ]?wheel(?:ed)? vehicle|toy vehicle)\b/iu.test(prompt)
+    && !/\b(motorcycle|motorbike|bicycle|tricycle|three[- ]wheel|two[- ]wheel)\b/iu.test(prompt);
+}
+
+function vehicleWheelSketches(plan: CadPlan): CircleSketchOperation[] {
+  const wheelPattern = /\b(wheel|tire|tyre)\b/iu;
+  return plan.operations.filter((operation): operation is CircleSketchOperation =>
+    operation.type === "create_circle_sketch" && wheelPattern.test(`${operation.sketchName} ${operation.reason}`)
+  );
+}
+
+function vehicleChassisSketch(plan: CadPlan): RectangleSketchOperation | undefined {
+  return plan.operations
+    .filter((operation): operation is RectangleSketchOperation =>
+      operation.type === "create_rectangle_sketch" &&
+      operation.plane === "Top" &&
+      /\b(chassis|body|base|frame|platform)\b/iu.test(`${operation.sketchName} ${operation.reason}`)
+    )
+    .sort((left, right) => right.widthMm * right.heightMm - left.widthMm * left.heightMm)[0];
+}
+
+function extrudeYInterval(operation: ExtrudeSketchOperation): [number, number] {
+  // Onshape's Front datum normal points toward -Y. "Opposite" therefore means
+  // +Y for both the start offset and the blind extrusion direction.
+  const start = operation.startOffsetOppositeDirection ? operation.startOffsetMm : -operation.startOffsetMm;
+  const end = start + (operation.oppositeDirection ? operation.depthMm : -operation.depthMm);
+  return [Math.min(start, end), Math.max(start, end)];
+}
+
+/**
+ * Reject geometrically valid but semantically implausible constructions for
+ * common real-world objects. This is intentionally narrow: it guards failure
+ * modes where the desired axes are unambiguous rather than pretending a schema
+ * validator can judge every design.
+ */
+export function validatePlanAgainstIntent(prompt: string, plan: CadPlan): CadPlan {
+  if (!isFourWheelVehiclePrompt(prompt)) return plan;
+
+  const wheelSketches = vehicleWheelSketches(plan);
+  if (wheelSketches.length === 0) return plan;
+  if (wheelSketches.some((operation) => operation.plane !== "Front")) {
+    throw new Error("Vehicle wheel profiles must use the Front plane so their extrusions run along the Y axle direction; Top-plane circles create vertical wheels.");
+  }
+  if (new Set(wheelSketches.map((operation) => operation.centerXmm)).size < 2) {
+    throw new Error("A four-wheel vehicle needs distinct front and rear wheel/axle profile locations along X.");
+  }
+
+  const sketchesByName = new Map(wheelSketches.map((operation) => [operation.sketchName.toLocaleLowerCase(), operation]));
+  const wheelExtrudes = plan.operations.filter((operation): operation is ExtrudeSketchOperation =>
+    operation.type === "extrude_sketch" && sketchesByName.has(operation.sourceFeatureName.toLocaleLowerCase())
+  );
+  if (wheelExtrudes.length < 4) {
+    throw new Error("A four-wheel vehicle needs four offset wheel extrudes: one on each chassis side at both the front and rear axle locations.");
+  }
+  if (wheelExtrudes.some((operation) => operation.operation !== "NEW" || operation.symmetric)) {
+    throw new Error("Vehicle wheels must be separate NEW, non-symmetric extrudes; do not create full-width axle rollers.");
+  }
+
+  const byAxle = new Map<number, ExtrudeSketchOperation[]>();
+  for (const operation of wheelExtrudes) {
+    const sketch = sketchesByName.get(operation.sourceFeatureName.toLocaleLowerCase());
+    if (!sketch) continue;
+    const axle = byAxle.get(sketch.centerXmm) ?? [];
+    axle.push(operation);
+    byAxle.set(sketch.centerXmm, axle);
+  }
+  if (byAxle.size < 2 || [...byAxle.values()].some((operations) => operations.length < 2)) {
+    throw new Error("Each front and rear axle location needs a pair of separate wheel extrudes.");
+  }
+
+  const chassis = vehicleChassisSketch(plan);
+  if (chassis) {
+    const lowerSideY = chassis.centerYmm - chassis.heightMm / 2;
+    const upperSideY = chassis.centerYmm + chassis.heightMm / 2;
+    for (const operations of byAxle.values()) {
+      const intervals = operations.map((operation) => ({ operation, interval: extrudeYInterval(operation) }));
+      const hasLowerWheel = intervals.some(({ operation, interval }) => !operation.oppositeDirection && interval[1] <= lowerSideY);
+      const hasUpperWheel = intervals.some(({ operation, interval }) => operation.oppositeDirection && interval[0] >= upperSideY);
+      if (!hasLowerWheel || !hasUpperWheel) {
+        throw new Error("Each axle needs one wheel extruding outward beyond the lower-Y chassis side and one beyond the upper-Y chassis side, measured around the chassis center rather than the global origin.");
+      }
+    }
+  } else {
+    if (wheelExtrudes.some((operation) => operation.startOffsetMm <= 0)) {
+      throw new Error("Vehicle wheel extrudes need positive start offsets when no new chassis profile is available to prove their separation.");
+    }
+    for (const operations of byAxle.values()) {
+      const directions = new Set(operations.map((operation) => operation.oppositeDirection));
+      if (!directions.has(false) || !directions.has(true)) {
+        throw new Error("Each axle needs wheel extrudes in both outward directions.");
+      }
+    }
+  }
+  return plan;
+}
+
+/**
+ * Compile a model-authored vehicle plan into deterministic bilateral wheel
+ * placement. Language models choose the construction; exact paired world
+ * coordinates are derived from the chassis bounds instead of sampled booleans.
+ */
+export function compilePlanSpatialIntent(prompt: string, plan: CadPlan): CadPlan {
+  if (!isFourWheelVehiclePrompt(prompt)) return plan;
+
+  const wheelSketches = vehicleWheelSketches(plan).filter((operation) => operation.plane === "Front");
+  if (wheelSketches.length === 0) return plan;
+  const sketchesByName = new Map(wheelSketches.map((operation) => [operation.sketchName.toLocaleLowerCase(), operation]));
+  const wheelExtrudeIndexes = plan.operations.flatMap((operation, index) =>
+    operation.type === "extrude_sketch" && sketchesByName.has(operation.sourceFeatureName.toLocaleLowerCase()) ? [index] : []
+  );
+  if (wheelExtrudeIndexes.length < 4) return plan;
+
+  const byAxle = new Map<number, number[]>();
+  for (const index of wheelExtrudeIndexes) {
+    const operation = plan.operations[index];
+    if (!operation || operation.type !== "extrude_sketch") continue;
+    const sketch = sketchesByName.get(operation.sourceFeatureName.toLocaleLowerCase());
+    if (!sketch) continue;
+    const indexes = byAxle.get(sketch.centerXmm) ?? [];
+    indexes.push(index);
+    byAxle.set(sketch.centerXmm, indexes);
+  }
+  if (byAxle.size < 2 || [...byAxle.values()].some((indexes) => indexes.length < 2)) return plan;
+
+  const chassis = vehicleChassisSketch(plan);
+  if (!chassis) return plan;
+  const upperStartY = chassis.centerYmm + chassis.heightMm / 2 + 0.5;
+  const lowerStartY = chassis.centerYmm - chassis.heightMm / 2 - 0.5;
+  let changed = false;
+  const operations = [...plan.operations];
+  for (const indexes of byAxle.values()) {
+    indexes.forEach((index, sideIndex) => {
+      const operation = operations[index];
+      if (!operation || operation.type !== "extrude_sketch") return;
+      const isLowerSide = sideIndex % 2 === 1;
+      const oppositeDirection = !isLowerSide;
+      const startY = isLowerSide ? lowerStartY : upperStartY;
+      const startOffsetMm = Math.abs(startY);
+      const startOffsetOppositeDirection = startY > 0;
+      if (operation.oppositeDirection === oppositeDirection &&
+        operation.startOffsetOppositeDirection === startOffsetOppositeDirection &&
+        operation.startOffsetMm === startOffsetMm) return;
+      operations[index] = {
+        ...operation,
+        oppositeDirection,
+        startOffsetOppositeDirection,
+        startOffsetMm
+      };
+      changed = true;
+    });
+  }
+  if (!changed) return plan;
+
+  const warning = "MorAssistant deterministically paired the vehicle wheel extrudes around the chassis center and outside both lateral sides.";
+  return cadPlanSchema.parse({
+    ...plan,
+    operations,
+    warnings: plan.warnings.includes(warning) ? plan.warnings : [...plan.warnings, warning].slice(0, 10)
+  });
 }
 
 export function validatePlanAgainstFeatureTree(

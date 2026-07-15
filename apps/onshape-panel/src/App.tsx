@@ -131,7 +131,7 @@ function OperationDetail({ operation }: { operation: PlanOperation }) {
     case "create_circle_sketch":
       return <p><code>{operation.sketchName}</code><i>·</i><code>Ø{operation.radiusMm * 2} mm · {operation.plane}</code></p>;
     case "extrude_sketch":
-      return <p><code>{operation.sourceFeatureName}</code><i>→</i><code>{operation.featureName} · {operation.depthMm} mm · {operation.operation}</code></p>;
+      return <p><code>{operation.sourceFeatureName}</code><i>→</i><code>{operation.featureName} · {operation.depthMm} mm{operation.startOffsetMm > 0 ? ` · offset ${operation.startOffsetMm} mm` : ""} · {operation.operation}</code></p>;
     case "fillet_feature_edges":
       return <p><code>{operation.targetFeatureName}</code><i>→</i><code>{operation.featureName} · R{operation.radiusMm} mm</code></p>;
     case "chamfer_feature_edges":

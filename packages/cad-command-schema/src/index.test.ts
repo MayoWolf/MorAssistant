@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   CAD_PLAN_JSON_SCHEMA,
   cadPlanSchema,
+  compilePlanSpatialIntent,
   normalizeCadPlanOutput,
   parseFeatureJson,
+  validatePlanAgainstIntent,
   validatePlanAgainstFeatureTree
 } from "./index.js";
 
@@ -193,6 +195,8 @@ describe("CAD plan validation", () => {
         operation: "NEW",
         oppositeDirection: false,
         symmetric: false,
+        startOffsetMm: 0,
+        startOffsetOppositeDirection: false,
         reason: "Create the solid cylinder"
       }, {
         type: "fillet_feature_edges",
@@ -230,6 +234,89 @@ describe("CAD plan validation", () => {
     }));
     expect(validatePlanAgainstFeatureTree(chamferPlan, [{ featureId: "e1", name: "Cylinder body" }])).toBe(chamferPlan);
     expect(cadPlanSchema.safeParse({ ...chamferPlan, risk: "low" }).success).toBe(false);
+  });
+
+  it("rejects vertical or axle-roller toy-car wheels and accepts four offset Y-axis wheels", () => {
+    const wheelSketches = [-35, 35].map((centerXmm, index) => ({
+      type: "create_circle_sketch" as const,
+      sketchName: index === 0 ? "Rear Wheel Profile" : "Front Wheel Profile",
+      plane: "Front" as const,
+      radiusMm: 12,
+      centerXmm,
+      centerYmm: 12,
+      reason: "Create a wheel profile normal to the Y axle direction"
+    }));
+    const wheelExtrudes = wheelSketches.flatMap((sketch) => [false, true].map((oppositeDirection) => ({
+      type: "extrude_sketch" as const,
+      featureName: `${sketch.sketchName} ${oppositeDirection ? "Left" : "Right"}`,
+      sourceFeatureName: sketch.sketchName,
+      depthMm: 6,
+      operation: "NEW" as const,
+      oppositeDirection,
+      symmetric: false,
+      startOffsetMm: 22,
+      startOffsetOppositeDirection: oppositeDirection,
+      reason: "Create one separate wheel outside the chassis side"
+    })));
+    const vehiclePlan = cadPlanSchema.parse({
+      summary: "Create four properly oriented toy-car wheels",
+      risk: "medium",
+      operations: [...wheelSketches, ...wheelExtrudes],
+      warnings: [],
+      requiresApproval: true
+    });
+    expect(validatePlanAgainstIntent("Make a toy car", vehiclePlan)).toBe(vehiclePlan);
+    expect(() => validatePlanAgainstIntent("Make a toy car", {
+      ...vehiclePlan,
+      operations: vehiclePlan.operations.map((operation) => operation.type === "create_circle_sketch"
+        ? { ...operation, plane: "Top" as const }
+        : operation)
+    })).toThrow("Top-plane circles create vertical wheels");
+    expect(() => validatePlanAgainstIntent("Make a toy car", {
+      ...vehiclePlan,
+      operations: vehiclePlan.operations.map((operation) => operation.type === "extrude_sketch"
+        ? { ...operation, startOffsetMm: 0 }
+        : operation)
+    })).toThrow("positive start offsets");
+
+    const oneSided = {
+      ...vehiclePlan,
+      operations: vehiclePlan.operations.map((operation) => operation.type === "extrude_sketch"
+        ? {
+            ...operation,
+            oppositeDirection: false,
+            startOffsetOppositeDirection: false,
+            startOffsetMm: 1
+          }
+        : operation)
+    } as typeof vehiclePlan;
+    const translatedPlan = cadPlanSchema.parse({
+      ...vehiclePlan,
+      operations: [{
+        type: "create_rectangle_sketch",
+        sketchName: "Translated Chassis Sketch",
+        plane: "Top",
+        widthMm: 90,
+        heightMm: 45,
+        centerXmm: 0,
+        centerYmm: 250,
+        reason: "Create the translated vehicle chassis"
+      }, ...oneSided.operations]
+    });
+    const translatedCompiled = compilePlanSpatialIntent("Make a toy car", translatedPlan);
+    expect(validatePlanAgainstIntent("Make a toy car", translatedCompiled)).toBe(translatedCompiled);
+    expect(translatedCompiled.warnings).toContain("MorAssistant deterministically paired the vehicle wheel extrudes around the chassis center and outside both lateral sides.");
+    const translatedExtrudes = translatedCompiled.operations.filter((operation) => operation.type === "extrude_sketch");
+    expect(translatedExtrudes.map((operation) => [
+      operation.startOffsetMm,
+      operation.startOffsetOppositeDirection,
+      operation.oppositeDirection
+    ])).toEqual([
+      [273, true, true],
+      [227, true, false],
+      [273, true, true],
+      [227, true, false]
+    ]);
   });
 
   it("requires high risk for deletion and an exact hash for whole-feature replacement", () => {

@@ -450,6 +450,53 @@ describe("installed Onshape extension pipeline", () => {
       status: "applied",
       result: { regenerationErrors: [], operations: [{ status: "applied", verification: "passed" }] }
     });
+
+    const spatialPlanResponse = await fetch(`${appOrigin}/api/plans`, {
+      method: "POST",
+      headers: sessionHeaders({ origin: appOrigin, "content-type": "application/json" }),
+      body: JSON.stringify({ prompt: "Run the toy car spatial regression with four real wheels", context })
+    });
+    expect(spatialPlanResponse.status).toBe(201);
+    const spatialPlan = await spatialPlanResponse.json() as {
+      id: string;
+      operations: Array<{
+        type: string;
+        plane?: string;
+        startOffsetMm?: number;
+        oppositeDirection?: boolean;
+        startOffsetOppositeDirection?: boolean;
+      }>;
+    };
+    expect(spatialPlan.operations).toHaveLength(6);
+    expect(spatialPlan.operations.filter((operation) => operation.type === "create_circle_sketch"))
+      .toHaveLength(2);
+    expect(spatialPlan.operations.filter((operation) => operation.type === "create_circle_sketch")
+      .every((operation) => operation.plane === "Front")).toBe(true);
+    expect(spatialPlan.operations.filter((operation) => operation.type === "extrude_sketch")
+      .every((operation) => operation.startOffsetMm === 22
+        && operation.oppositeDirection === operation.startOffsetOppositeDirection)).toBe(true);
+
+    const spatialApply = await fetch(`${appOrigin}/api/plans/${spatialPlan.id}/apply`, {
+      method: "POST",
+      headers: sessionHeaders({ origin: appOrigin })
+    });
+    expect(spatialApply.status).toBe(200);
+    expect(await spatialApply.json()).toMatchObject({
+      status: "applied",
+      result: { regenerationErrors: [], operations: new Array(6).fill({ status: "applied", verification: "passed" }) }
+    });
+    const spatialState = await fetch(`${onshapeOrigin}/__state`).then((response) => response.json()) as {
+      sketches: Array<{ name: string; featureType: string; parameters: Array<Record<string, any>> }>;
+    };
+    const spatialFeatures = spatialState.sketches.filter((feature) => feature.name.startsWith("Spatial "));
+    expect(spatialFeatures).toHaveLength(6);
+    expect(spatialFeatures.filter((feature) => feature.featureType === "newSketch")
+      .every((feature) => feature.parameters.find((parameter) => parameter.parameterId === "sketchPlane")
+        ?.queries?.[0]?.deterministicIds?.[0] === "JCC")).toBe(true);
+    expect(spatialFeatures.filter((feature) => feature.featureType === "extrude")
+      .every((feature) => feature.parameters.find((parameter) => parameter.parameterId === "startOffset")?.value === true
+        && feature.parameters.find((parameter) => parameter.parameterId === "startOffsetDistance")?.expression === "22 mm"))
+      .toBe(true);
   }, 20_000);
 
   it("rejects version contexts and unexpected Onshape stacks", async () => {

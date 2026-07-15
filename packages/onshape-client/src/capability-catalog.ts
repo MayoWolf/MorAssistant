@@ -85,7 +85,7 @@ const sketchGeometry = defineMany("sketch_geometry", "sketch", "native_sketch", 
   ["center-point-rectangle", "Center-point rectangle", "newSketch", "center rectangle|symmetric rectangle", "Center, width, height, and orientation.", "Create a rectangle centered on a reference point and keep opposing sides symmetric."],
   ["three-point-rectangle", "Three-point rectangle", "newSketch", "angled rectangle|oriented rectangle", "Three points defining a side and width.", "Use when the rectangle must not align to the sketch axes."],
   ["aligned-rectangle", "Aligned rectangle", "newSketch", "edge aligned rectangle", "An alignment reference and rectangle bounds.", "Align the rectangle to existing sketch or model geometry."],
-  ["center-point-circle", "Center-point circle", "newSketch", "circle|round profile|diameter", "Center and radius or diameter.", "Prefer the typed create_circle_sketch operation for a single Top-plane circle."],
+  ["center-point-circle", "Center-point circle", "newSketch", "circle|round profile|diameter", "Center, radius or diameter, and a plane chosen from the desired cylinder axis.", "Prefer typed create_circle_sketch on Top, Front, or Right. The sketch-plane normal becomes the axis when extruded."],
   ["three-point-circle", "Three-point circle", "newSketch", "circle through points|circumcircle", "Three non-collinear points.", "Use when a circle must pass through three known locations."],
   ["tangent-arc", "Tangent arc", "newSketch", "arc tangent", "An existing curve endpoint and arc endpoint.", "Continue from a curve with tangent continuity."],
   ["three-point-arc", "Three-point arc", "newSketch", "arc through points", "Start, end, and point on the arc.", "Use for an arc fixed by three positions."],
@@ -142,7 +142,7 @@ const sketchEditing = defineMany("sketch_edit", "sketch", "native_sketch", [
 ]);
 
 const solidFeatures = defineMany("solid_feature", "part_studio", "native_feature", [
-  ["extrude", "Extrude", "extrude", "push pull|prismatic|pad|pocket|cut", "Sketch regions, planar faces, or curves.", "Choose solid/surface/thin, NEW/ADD/REMOVE/INTERSECT, end bound, direction, offsets, draft, second direction, and merge scope. Prefer typed extrude_sketch for blind solids."],
+  ["extrude", "Extrude", "extrude", "push pull|prismatic|pad|pocket|cut", "Sketch regions, planar faces, or curves whose normal matches the intended 3D direction.", "Choose solid/surface/thin, NEW/ADD/REMOVE/INTERSECT, end bound, direction, starting offset, draft, second direction, and merge scope. Prefer typed extrude_sketch for blind solids and offset solids such as paired wheels."],
   ["revolve", "Revolve", "revolve", "lathe|turn|revolution", "Profile plus an axis.", "Choose solid/surface/thin, operation, axis, angle/full revolution, directions, and merge scope."],
   ["sweep", "Sweep", "sweep", "pipe along path|profile along path", "Profile and a connected path; optional guide/lock controls.", "Choose solid/surface/thin and operation; control profile orientation, twist, scale, and merge scope. Use Pierce constraints to locate profiles robustly."],
   ["loft", "Loft", "loft", "blend profiles|transition", "Two or more ordered profiles or faces.", "Choose solid/surface/thin and operation; order profiles, add guides/paths, and set start/end continuity and connections."],

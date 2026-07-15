@@ -215,6 +215,7 @@ describe("Onshape feature edits", () => {
   it("builds a closed rectangle sketch in Onshape's meter-based feature format", () => {
     const feature = buildRectangleSketchFeature({
       name: "20 mm square",
+      plane: "Top",
       widthMm: 20,
       heightMm: 20,
       centerXmm: 30,
@@ -237,6 +238,7 @@ describe("Onshape feature edits", () => {
   it("builds native circle, blind extrude, fillet, and chamfer payloads", () => {
     const circle = buildCircleSketchFeature({
       name: "Cylinder profile",
+      plane: "Front",
       radiusMm: 12,
       centerXmm: 40,
       centerYmm: -5
@@ -253,12 +255,16 @@ describe("Onshape feature edits", () => {
       depthMm: 30,
       operation: "NEW",
       oppositeDirection: false,
-      symmetric: false
+      symmetric: false,
+      startOffsetMm: 20,
+      startOffsetOppositeDirection: false
     }) as Record<string, unknown> & { parameters: Array<Record<string, unknown>> };
     expect(extrude).toMatchObject({ btType: "BTMFeature-134", name: "Cylinder body", featureType: "extrude" });
     expect(extrude.parameters).toEqual(expect.arrayContaining([
       expect.objectContaining({ parameterId: "operationType", enumName: "NewBodyOperationType", value: "NEW" }),
       expect.objectContaining({ parameterId: "depth", expression: "30 mm" }),
+      expect.objectContaining({ parameterId: "startOffset", value: true }),
+      expect.objectContaining({ parameterId: "startOffsetDistance", expression: "20 mm" }),
       expect.objectContaining({ parameterId: "defaultScope", value: false })
     ]));
     expect(JSON.stringify(extrude)).toContain('qSketchRegion(id + \\"sketch1\\", true)');
@@ -357,6 +363,8 @@ describe("Onshape feature edits", () => {
       operation: "NEW",
       oppositeDirection: false,
       symmetric: false,
+      startOffsetMm: 0,
+      startOffsetOppositeDirection: false,
       reason: "Solid"
     }, { ...concurrency, features: [{ featureId: "sketch1", name: "Cylinder profile", featureType: "newSketch" }] });
     await client.applyOperationDetailed(context, {

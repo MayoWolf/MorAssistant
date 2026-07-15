@@ -88,7 +88,13 @@ The agent is taught to treat these as families of modes rather than single butto
 - **shape controls:** draft, twist, scale, thickness, start/end continuity, connections, and merge scope;
 - **verification:** target body count, direction, termination, continuity, and regeneration state.
 
-The typed `extrude_sketch` path deliberately implements the most reliable common subset. More advanced modes use the exact live `extrude` spec and an existing exemplar rather than extending a guessed payload.
+The typed `extrude_sketch` path implements the most reliable common subset, including direction, symmetry, and a blind starting offset. Typed sketches can target Top `(X,Y)`, Front `(X,Z)`, or Right `(Y,Z)`; the plane normal is treated as a deliberate modeling axis. More advanced modes use the exact live `extrude` spec and an existing exemplar rather than extending a guessed payload.
+
+## Spatial intelligence and real-world plausibility
+
+Feature regeneration proves that geometry is mathematically legal, not that the object makes sense. Before emitting a plan, the agent must establish a world coordinate frame and check axes, sides, bilateral pairs, ground contact, clearance, interference, and relative proportions.
+
+For an ordinary vehicle the convention is Z up, X longitudinal, and Y left-to-right. Wheel profiles therefore lie on the Front plane and extrude along Y. Front and rear profiles are placed at different X positions and wheel-radius Z height; separate outward extrudes start beyond the lower-Y and upper-Y chassis sides. A deterministic spatial compiler pairs the two sides at every axle and derives exact world-coordinate start offsets from a matching Top-plane chassis profile. It explicitly accounts for Onshape's Front datum normal pointing toward world −Y: an `opposite` Front offset or extrusion points toward +Y. Offset sign and outward extrusion direction are evaluated separately, which keeps translated vehicles correct instead of accidentally mirroring one side around the global origin. Trusted validation then rejects Top-plane vehicle wheels, center-spanning axle rollers, missing side pairs, and chassis intersections before they reach the approval panel.
 
 ## Fillets, chamfers, shells, and direct editing
 

@@ -158,11 +158,11 @@ server.registerTool("update_dimension", {
 
 server.registerTool("create_rectangle_sketch", {
   title: "Create a rectangle sketch",
-  description: "Create one axis-aligned rectangle or square sketch on the Top plane.",
+  description: "Create one axis-aligned rectangle or square sketch on the Top, Front, or Right datum plane.",
   inputSchema: {
     ...contextShape,
     sketchName: z.string().trim().min(1).max(100),
-    plane: z.literal("Top"),
+    plane: z.enum(["Top", "Front", "Right"]),
     widthMm: z.number().min(0.1).max(10_000),
     heightMm: z.number().min(0.1).max(10_000),
     centerXmm: z.number().min(-100_000).max(100_000),
@@ -185,11 +185,11 @@ server.registerTool("create_rectangle_sketch", {
 
 server.registerTool("create_circle_sketch", {
   title: "Create a circle sketch",
-  description: "Create one native circle sketch on the Top plane.",
+  description: "Create one native circle sketch on the Top, Front, or Right datum plane.",
   inputSchema: {
     ...contextShape,
     sketchName: z.string().trim().min(1).max(100),
-    plane: z.literal("Top"),
+    plane: z.enum(["Top", "Front", "Right"]),
     radiusMm: z.number().min(0.05).max(10_000),
     centerXmm: z.number().min(-100_000).max(100_000),
     centerYmm: z.number().min(-100_000).max(100_000)
@@ -218,10 +218,12 @@ server.registerTool("extrude_sketch", {
     depthMm: z.number().min(0.05).max(100_000),
     operation: z.enum(["NEW", "ADD", "REMOVE", "INTERSECT"]),
     oppositeDirection: z.boolean(),
-    symmetric: z.boolean()
+    symmetric: z.boolean(),
+    startOffsetMm: z.number().min(0).max(100_000),
+    startOffsetOppositeDirection: z.boolean()
   },
   annotations: { readOnlyHint: false, destructiveHint: false }
-}, async ({ featureName, sourceFeatureName, depthMm, operation, oppositeDirection, symmetric, ...context }) => {
+}, async ({ featureName, sourceFeatureName, depthMm, operation, oppositeDirection, symmetric, startOffsetMm, startOffsetOppositeDirection, ...context }) => {
   const message = await client.applyOperation(context, {
     type: "extrude_sketch",
     featureName,
@@ -230,6 +232,8 @@ server.registerTool("extrude_sketch", {
     operation,
     oppositeDirection,
     symmetric,
+    startOffsetMm,
+    startOffsetOppositeDirection,
     reason: "Approved MCP operation"
   });
   return { content: [{ type: "text", text: message }] };
