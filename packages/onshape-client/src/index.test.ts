@@ -69,6 +69,18 @@ describe("Onshape feature edits", () => {
       .rejects.toThrow("retry in 450 seconds");
   });
 
+  it("bounds an unresponsive Onshape request with a clear timeout error", async () => {
+    vi.stubGlobal("fetch", vi.fn((_input: string | URL | Request, init?: RequestInit) => new Promise((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) return reject(new Error("Expected a request timeout signal."));
+      if (signal.aborted) return reject(signal.reason);
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    })));
+    const client = new OnshapeClient({ accessToken: () => "token", requestTimeoutMs: 5 });
+    await expect(client.listFeatures({ documentId: "d", workspaceId: "w", elementId: "e" }))
+      .rejects.toThrow("Onshape API request timed out");
+  });
+
   it("surfaces a bounded Onshape validation message for rejected native payloads", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
       message: "Missing enumName for operationType\nwith control detail"
@@ -608,6 +620,52 @@ describe("Onshape feature edits", () => {
     expect(inspection.trustedSources[0]).toMatchObject({ documentId: "frc-shafts", elementId: "hex-shafts", partId: "JHD" });
   });
 
+  it("decodes opaque component configuration tokens using authoritative Onshape option labels", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      configurationParameters: [{
+        parameterId: "Durometer",
+        parameterName: "Durometer",
+        options: [
+          { optionName: "35A", option: "_40A" },
+          { optionName: "40A", option: "_50A" }
+        ]
+      }]
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new OnshapeClient({ accessToken: () => "token" });
+    const inspection = await client.inspectAssembly(
+      { documentId: "d", workspaceId: "w", elementId: "assembly" },
+      {
+        rootAssembly: {
+          documentMicroversion: "assembly-m1",
+          instances: [{
+            id: "wheel-1",
+            name: "2 inch Compliant Wheel (35A) <1>",
+            type: "Part",
+            documentId: "frc-wheels",
+            elementId: "compliant-wheels",
+            documentVersion: "wheel-version",
+            documentMicroversion: "wheel-microversion",
+            partId: "JHD",
+            fullConfiguration: "Durometer=_40A"
+          }],
+          occurrences: [],
+          features: []
+        }
+      },
+      [],
+      "Convert every compliant wheel to 35A"
+    );
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/elements/d/frc-wheels/v/wheel-version/e/compliant-wheels/configuration");
+    expect(inspection.instances[0]?.configurationValues).toEqual([{
+      parameterId: "Durometer",
+      parameterName: "Durometer",
+      encodedValue: "_40A",
+      displayValue: "35A"
+    }]);
+  });
+
   it("searches the FRCDesignApp catalog and resolves exact versioned wheel part IDs", async () => {
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
@@ -686,5 +744,60 @@ describe("Onshape feature edits", () => {
     expect(insertBody).toMatchObject({ documentId: "wheels", elementId: "compliant", versionId: "v1", partId: "JHD" });
     const transformBody = JSON.parse(String((fetchMock.mock.calls[2]?.[1] as RequestInit).body));
     expect(transformBody.transformDefinitions[0]).toEqual({ isRelative: false, occurrences: [{ path: ["wheel-1"] }], transform: identity });
+  });
+
+  it("places only the instance identified by the insertion response when another instance appears concurrently", async () => {
+    const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "wheel-1" }), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        rootAssembly: {
+          documentMicroversion: "m2",
+          instances: [{
+            id: "wheel-1",
+            name: "Compliant Wheel <1>",
+            type: "Part",
+            documentId: "wheels",
+            elementId: "compliant",
+            documentVersion: "v1",
+            partId: "JHD"
+          }, {
+            id: "external-1",
+            name: "Another user's component",
+            type: "Part",
+            documentId: "wheels",
+            elementId: "compliant",
+            documentVersion: "v1",
+            partId: "JHD"
+          }],
+          occurrences: [
+            { path: ["wheel-1"], transform: identity },
+            { path: ["external-1"], transform: identity }
+          ],
+          features: []
+        }
+      }), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new OnshapeClient({ accessToken: () => "token" });
+    const context = { documentId: "target", workspaceId: "workspace", elementId: "assembly" };
+    const before = await client.inspectAssembly(context, { rootAssembly: { documentMicroversion: "m1", instances: [], occurrences: [], features: [] } });
+    await client.applyAssemblyOperationDetailed(context, {
+      type: "insert_assembly_component",
+      componentName: "Compliant Wheel",
+      sourceDocumentId: "wheels",
+      sourceElementId: "compliant",
+      sourceVersionId: "v1",
+      sourceMicroversionId: "part-m1",
+      partId: "JHD",
+      configuration: "",
+      isAssembly: false,
+      isWholePartStudio: false,
+      transform: identity,
+      reason: "Place the requested wheel"
+    }, before);
+
+    const transformBody = JSON.parse(String((fetchMock.mock.calls[2]?.[1] as RequestInit).body));
+    expect(transformBody.transformDefinitions[0].occurrences).toEqual([{ path: ["wheel-1"] }]);
   });
 });

@@ -559,6 +559,23 @@ describe("installed Onshape extension pipeline", () => {
       agentTrace: { elementType: "ASSEMBLY", instanceCount: 1 }
     });
 
+    await fetch(`${onshapeOrigin}/__assembly-rate-limit?enabled=true`, { method: "POST" });
+    const throttledAssemblyResponse = await fetch(`${appOrigin}/api/plans`, {
+      method: "POST",
+      headers: sessionHeaders({ origin: appOrigin, "content-type": "application/json" }),
+      body: JSON.stringify({ prompt: "What is in this assembly? Run the assembly inventory during throttling.", context: assemblyContext })
+    });
+    expect(throttledAssemblyResponse.status).toBe(201);
+    expect(await throttledAssemblyResponse.json()).toMatchObject({
+      status: "applied",
+      operations: [],
+      agentTrace: {
+        elementType: "ASSEMBLY",
+        inspectionWarnings: [expect.stringMatching(/rate-limited.*encrypted, verified snapshot/i)]
+      }
+    });
+    await fetch(`${onshapeOrigin}/__assembly-rate-limit?enabled=false`, { method: "POST" });
+
     const wheelPlanResponse = await fetch(`${appOrigin}/api/plans`, {
       method: "POST",
       headers: sessionHeaders({ origin: appOrigin, "content-type": "application/json" }),

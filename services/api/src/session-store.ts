@@ -17,6 +17,12 @@ export interface PartStudioSnapshot {
   geometry?: PartStudioGeometryEvidence;
 }
 
+export interface AssemblySnapshot {
+  contextKey: string;
+  capturedAt: number;
+  definition: Record<string, unknown>;
+}
+
 export interface UserSession {
   id: string;
   lastTouchedAt: number;
@@ -29,6 +35,7 @@ export interface UserSession {
   codexThreads: Map<string, string>;
   plans: Map<string, StoredCadPlan>;
   partStudioSnapshots: Map<string, PartStudioSnapshot>;
+  assemblySnapshots: Map<string, AssemblySnapshot>;
 }
 
 const onshapeTokensSchema = z.object({
@@ -67,6 +74,12 @@ const partStudioSnapshotSchema = z.object({
   }).strict().optional()
 }).strict();
 
+const assemblySnapshotSchema = z.object({
+  contextKey: z.string().regex(/^[a-f0-9]{64}$/u),
+  capturedAt: z.number().int().nonnegative(),
+  definition: z.record(z.string(), z.unknown())
+}).strict();
+
 const persistedSessionSchema = z.object({
   onshapeTokens: onshapeTokensSchema.optional(),
   onshapeState: z.string().optional(),
@@ -74,7 +87,8 @@ const persistedSessionSchema = z.object({
   codexConnected: z.boolean().optional(),
   codexThreads: z.record(z.string().regex(/^[a-f0-9]{64}$/u), z.string().min(1).max(200)).optional(),
   plans: z.array(persistedPlanSchema),
-  partStudioSnapshots: z.array(partStudioSnapshotSchema).max(20).optional()
+  partStudioSnapshots: z.array(partStudioSnapshotSchema).max(20).optional(),
+  assemblySnapshots: z.array(assemblySnapshotSchema).max(20).optional()
 }).strict();
 
 interface SessionRow {
@@ -154,7 +168,8 @@ export class SessionStore {
       lastTouchedAt: Date.now(),
       codexThreads: new Map(),
       plans: new Map(),
-      partStudioSnapshots: new Map()
+      partStudioSnapshots: new Map(),
+      assemblySnapshots: new Map()
     };
     this.save(session);
     return session;
@@ -175,6 +190,10 @@ export class SessionStore {
         snapshot.contextKey,
         snapshot as PartStudioSnapshot
       ])),
+      assemblySnapshots: new Map((persisted.assemblySnapshots ?? []).map((snapshot) => [
+        snapshot.contextKey,
+        snapshot as AssemblySnapshot
+      ])),
       ...(persisted.onshapeTokens ? { onshapeTokens: persisted.onshapeTokens } : {}),
       ...(persisted.onshapeState ? { onshapeState: persisted.onshapeState } : {}),
       ...(persisted.onshapeRedirectUri ? { onshapeRedirectUri: persisted.onshapeRedirectUri } : {}),
@@ -192,7 +211,8 @@ export class SessionStore {
       ...(session.codexConnected ? { codexConnected: true } : {}),
       codexThreads: Object.fromEntries(session.codexThreads),
       plans: [...session.plans.values()],
-      partStudioSnapshots: [...session.partStudioSnapshots.values()]
+      partStudioSnapshots: [...session.partStudioSnapshots.values()],
+      assemblySnapshots: [...session.assemblySnapshots.values()]
     });
     const now = Date.now();
     this.database.prepare(`

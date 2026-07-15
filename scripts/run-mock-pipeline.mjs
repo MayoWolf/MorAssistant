@@ -15,6 +15,7 @@ const codexHome = await mkdtemp(`${tmpdir()}/morassistant-e2e-`);
 let microversion = 1;
 let sketchCounter = 0;
 let rateLimitFeatureReads = false;
+let rateLimitAssemblyReads = false;
 const sketches = [];
 let assemblyMicroversion = 1;
 let assemblyCounter = 0;
@@ -83,6 +84,10 @@ const onshape = createServer(async (request, response) => {
     rateLimitFeatureReads = url.searchParams.get("enabled") !== "false";
     return json(response, 200, { enabled: rateLimitFeatureReads });
   }
+  if (request.method === "POST" && url.pathname === "/__assembly-rate-limit") {
+    rateLimitAssemblyReads = url.searchParams.get("enabled") !== "false";
+    return json(response, 200, { enabled: rateLimitAssemblyReads });
+  }
   if (request.method === "GET" && url.pathname === "/api/library/frc-design-lib") {
     return json(response, 200, {
       documents: {
@@ -117,7 +122,31 @@ const onshape = createServer(async (request, response) => {
       microversionId: "wheel-part-m1"
     }]);
   }
+  if (request.method === "GET" && /\/api\/v13\/elements\/d\/[^/]+\/[vm]\/[^/]+\/e\/[^/]+\/configuration$/.test(url.pathname)) {
+    return json(response, 200, {
+      configurationParameters: [{
+        parameterId: "Length",
+        parameterName: "Length",
+        defaultValue: "0.3 meter"
+      }, {
+        parameterId: "Durometer",
+        parameterName: "Durometer",
+        options: [
+          { optionName: "35A", option: "_40A" },
+          { optionName: "40A", option: "_50A" }
+        ]
+      }]
+    });
+  }
   if (request.method === "GET" && /\/api\/v13\/assemblies\/d\/[^/]+\/w\/[^/]+\/e\/assembly$/.test(url.pathname)) {
+    if (rateLimitAssemblyReads) {
+      response.writeHead(429, {
+        "content-type": "application/json",
+        "retry-after": "3600",
+        "x-rate-limit-remaining": "0"
+      });
+      return response.end(JSON.stringify({ message: "mock assembly rate limit" }));
+    }
     return json(response, 200, {
       rootAssembly: {
         documentMicroversion: `assembly-m${assemblyMicroversion}`,

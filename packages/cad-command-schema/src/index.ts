@@ -1176,6 +1176,29 @@ function assertAssemblyTransform(transform: number[]): void {
     Math.abs((transform[15] ?? 0) - 1) > tolerance) {
     throw new Error("Assembly transforms must be affine 4x4 matrices with a [0, 0, 0, 1] final row.");
   }
+
+  const rotation = [
+    [transform[0]!, transform[1]!, transform[2]!],
+    [transform[4]!, transform[5]!, transform[6]!],
+    [transform[8]!, transform[9]!, transform[10]!]
+  ];
+  const rigidTolerance = 1e-5;
+  for (let row = 0; row < 3; row += 1) {
+    for (let other = row; other < 3; other += 1) {
+      const dot = rotation[row]!.reduce((sum, value, column) => sum + value * rotation[other]![column]!, 0);
+      const expected = row === other ? 1 : 0;
+      if (Math.abs(dot - expected) > rigidTolerance) {
+        throw new Error("Assembly transforms must use a rigid orthonormal rotation without scale or shear.");
+      }
+    }
+  }
+  const determinant =
+    rotation[0]![0]! * (rotation[1]![1]! * rotation[2]![2]! - rotation[1]![2]! * rotation[2]![1]!) -
+    rotation[0]![1]! * (rotation[1]![0]! * rotation[2]![2]! - rotation[1]![2]! * rotation[2]![0]!) +
+    rotation[0]![2]! * (rotation[1]![0]! * rotation[2]![1]! - rotation[1]![1]! * rotation[2]![0]!);
+  if (Math.abs(determinant - 1) > rigidTolerance) {
+    throw new Error("Assembly transforms must use a proper rotation and cannot mirror components.");
+  }
 }
 
 function sourceMatches(
@@ -1188,8 +1211,8 @@ function sourceMatches(
     operation.configuration === (source.configuration ?? "") &&
     operation.isAssembly === (source.isAssembly ?? false) &&
     operation.isWholePartStudio === (source.isWholePartStudio ?? false) &&
-    (operation.sourceVersionId === (source.versionId ?? null) ||
-      operation.sourceMicroversionId === (source.microversionId ?? null));
+    operation.sourceVersionId === (source.versionId ?? null) &&
+    operation.sourceMicroversionId === (source.microversionId ?? null);
 }
 
 export function validatePlanAgainstAssembly(plan: CadPlan, snapshot: AssemblyValidationSnapshot): CadPlan {

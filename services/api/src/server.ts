@@ -104,6 +104,7 @@ type PlanJob = {
   sessionId: string;
   status: "planning" | "completed" | "failed";
   createdAt: number;
+  finishedAt?: number;
   progress: PlanningProgress[];
   plan?: StoredCadPlan;
   error?: string;
@@ -236,6 +237,25 @@ function storePartStudioSnapshot(
   }
 }
 
+function storeAssemblySnapshot(
+  session: UserSession,
+  contextKey: string,
+  definition: Record<string, unknown>
+): void {
+  if (JSON.stringify(definition).length > 2_000_000) return;
+  session.assemblySnapshots.delete(contextKey);
+  session.assemblySnapshots.set(contextKey, {
+    contextKey,
+    capturedAt: Date.now(),
+    definition
+  });
+  while (session.assemblySnapshots.size > 20) {
+    const oldestKey = session.assemblySnapshots.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    session.assemblySnapshots.delete(oldestKey);
+  }
+}
+
 function responseRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -319,8 +339,22 @@ async function createStoredAssemblyPlan(
   onProgress?: PlanningProgressCallback
 ): Promise<StoredCadPlan> {
   const client = clientFor(session, body.context);
+  const storedSnapshot = session.assemblySnapshots.get(snapshotKey);
+  let usedStoredSnapshot = false;
+  let rateLimitFallback = false;
+  const definitionPromise = storedSnapshot && Date.now() - storedSnapshot.capturedAt <= env.ONSHAPE_SNAPSHOT_FRESH_MS
+    ? Promise.resolve(storedSnapshot.definition).then((definition) => {
+      usedStoredSnapshot = true;
+      return definition;
+    })
+    : client.getAssemblyDefinition(body.context).catch((error) => {
+      if (!isOnshapeRateLimit(error) || !storedSnapshot) throw error;
+      usedStoredSnapshot = true;
+      rateLimitFallback = true;
+      return storedSnapshot.definition;
+    });
   const [definition, candidatesResult] = await Promise.all([
-    client.getAssemblyDefinition(body.context),
+    definitionPromise,
     client.searchFrcDesignLibrary(body.prompt).then(
       (candidates) => ({ candidates, warning: undefined as string | undefined }),
       () => ({
@@ -329,10 +363,22 @@ async function createStoredAssemblyPlan(
       })
     )
   ]);
-  const rawInspection = await client.inspectAssembly(body.context, definition, candidatesResult.candidates);
+  const rawInspection = await client.inspectAssembly(body.context, definition, candidatesResult.candidates, body.prompt);
+  const documentMicroversion = rawInspection.documentMicroversion;
+  if (!documentMicroversion) {
+    throw new Error("Onshape did not return an Assembly document microversion, so a concurrency-safe plan cannot be created.");
+  }
+  if (!usedStoredSnapshot) storeAssemblySnapshot(session, snapshotKey, definition);
+  const snapshotWarning = rateLimitFallback
+    ? `Onshape Assembly reads are temporarily rate-limited. Planning used the last encrypted, verified snapshot from ${new Date(storedSnapshot!.capturedAt).toLocaleString("en-US", { timeZone: "UTC" })} UTC; execution will re-read the live Assembly and enforce its microversion guard.`
+    : undefined;
   const inspection: AssemblyInspection = {
     ...rawInspection,
-    warnings: [...rawInspection.warnings, ...(candidatesResult.warning ? [candidatesResult.warning] : [])]
+    warnings: [
+      ...rawInspection.warnings,
+      ...(snapshotWarning ? [snapshotWarning] : []),
+      ...(candidatesResult.warning ? [candidatesResult.warning] : [])
+    ]
   };
   const priorTurns = [...session.plans.values()]
     .filter((candidate) => elementContextKey(candidate.context) === snapshotKey)
@@ -378,7 +424,7 @@ async function createStoredAssemblyPlan(
       geometry: planning.inspection.geometry,
       inspectionWarnings: planning.inspection.warnings
     },
-    ...(inspection.documentMicroversion ? { sourceMicroversion: inspection.documentMicroversion } : {}),
+    sourceMicroversion: documentMicroversion,
     assemblyTrustedSources: inspection.trustedSources,
     ...(recoveryForPlanId ? { recoveryForPlanId } : {})
   };
@@ -520,9 +566,24 @@ async function createStoredPlan(
 }
 
 function prunePlanJobs(): void {
-  const cutoff = Date.now() - 15 * 60_000;
+  const now = Date.now();
+  const planningCutoff = now - 9 * 60_000;
+  const retentionCutoff = now - 15 * 60_000;
   for (const [id, job] of planJobs) {
-    if (job.createdAt < cutoff && job.status !== "planning") planJobs.delete(id);
+    if (job.status === "planning" && job.createdAt < planningCutoff) {
+      workers.stopForUser(job.sessionId);
+      job.status = "failed";
+      job.finishedAt = now;
+      job.error = "CAD planning exceeded the safe execution window and was stopped. Try the request again.";
+      updatePlanJobProgress(job, {
+        id: "timeout",
+        kind: "validation",
+        message: "Planning stopped after exceeding the safe execution window.",
+        at: now
+      });
+      continue;
+    }
+    if (job.status !== "planning" && (job.finishedAt ?? job.createdAt) < retentionCutoff) planJobs.delete(id);
   }
 }
 
@@ -555,7 +616,7 @@ function recoveryPrompt(plan: StoredCadPlan): string {
   ].join("\n\n").slice(0, 4_000);
 }
 
-function transformsMatch(left: number[], right: number[], tolerance = 1e-8): boolean {
+function transformsMatch(left: number[], right: number[], tolerance = 1e-6): boolean {
   return left.length === 16 && right.length === 16 && left.every((value, index) =>
     Number.isFinite(value) && Number.isFinite(right[index]) && Math.abs(value - right[index]!) <= tolerance
   );
@@ -614,7 +675,10 @@ async function applyStoredAssemblyPlan(
   let inspection: AssemblyInspection;
   try {
     inspection = await client.inspectAssembly(plan.context);
-    if (plan.sourceMicroversion && inspection.documentMicroversion !== plan.sourceMicroversion) {
+    if (!plan.sourceMicroversion || !inspection.documentMicroversion) {
+      throw new Error("This Assembly plan does not have a complete microversion guard. Create a fresh plan before applying changes.");
+    }
+    if (inspection.documentMicroversion !== plan.sourceMicroversion) {
       throw new Error("The Assembly changed after the plan preview. Create a fresh plan before applying changes.");
     }
     validatePlanAgainstAssembly(plan, {
@@ -1142,10 +1206,14 @@ app.post("/api/plan-jobs", async (request, reply) => {
   };
   planJobs.set(job.id, job);
   void createStoredPlan(session, body, undefined, (progress) => updatePlanJobProgress(job, progress)).then((plan) => {
+    if (job.status !== "planning") return;
     job.status = "completed";
+    job.finishedAt = Date.now();
     job.plan = plan;
   }).catch((error) => {
+    if (job.status !== "planning") return;
     job.status = "failed";
+    job.finishedAt = Date.now();
     job.error = planJobError(error);
     request.log.error(logError(error), "Background plan creation failed");
   });
@@ -1193,10 +1261,14 @@ app.post("/api/plans/:id/recovery-jobs", async (request, reply) => {
     failedPlan.id,
     (progress) => updatePlanJobProgress(job, progress)
   ).then((plan) => {
+    if (job.status !== "planning") return;
     job.status = "completed";
+    job.finishedAt = Date.now();
     job.plan = plan;
   }).catch((error) => {
+    if (job.status !== "planning") return;
     job.status = "failed";
+    job.finishedAt = Date.now();
     job.error = planJobError(error);
     request.log.error(logError(error), "Background recovery planning failed");
   });

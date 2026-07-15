@@ -65,6 +65,16 @@ describe("encrypted persistent session store", () => {
         serializationVersion: "1.2.20"
       }
     });
+    session.assemblySnapshots.set("c".repeat(64), {
+      contextKey: "c".repeat(64),
+      capturedAt: 1_752_400_000_100,
+      definition: {
+        rootAssembly: {
+          documentMicroversion: "assembly-microversion-1",
+          instances: [{ id: "private-wheel", name: "Private assembly wheel" }]
+        }
+      }
+    });
     first.save(session);
     first.close();
 
@@ -72,6 +82,7 @@ describe("encrypted persistent session store", () => {
     expect(databaseBytes).not.toContain("sensitive-access-token");
     expect(databaseBytes).not.toContain("Rename one feature");
     expect(databaseBytes).not.toContain("Private snapshot feature");
+    expect(databaseBytes).not.toContain("Private assembly wheel");
 
     const second = new SessionStore(path, secret);
     const restored = second.get("session-1");
@@ -82,6 +93,10 @@ describe("encrypted persistent session store", () => {
     expect(restored?.partStudioSnapshots.get("a".repeat(64))).toMatchObject({
       capturedAt: 1_752_400_000_000,
       tree: { sourceMicroversion: "microversion-1", features: [{ featureId: "feature-1" }] }
+    });
+    expect(restored?.assemblySnapshots.get("c".repeat(64))).toMatchObject({
+      capturedAt: 1_752_400_000_100,
+      definition: { rootAssembly: { documentMicroversion: "assembly-microversion-1" } }
     });
     second.close();
   });

@@ -144,8 +144,16 @@ export interface AssemblyInstanceSummary {
   documentMicroversion?: string;
   partId?: string;
   configuration: string;
+  configurationValues?: AssemblyConfigurationValue[];
   isAssembly: boolean;
   isWholePartStudio: boolean;
+}
+
+export interface AssemblyConfigurationValue {
+  parameterId: string;
+  parameterName: string;
+  encodedValue: string;
+  displayValue: string;
 }
 
 export interface AssemblyOccurrenceSummary {
@@ -454,6 +462,32 @@ function recordValue(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
+function createdAssemblyInstanceIds(value: unknown): string[] {
+  const response = recordValue(value);
+  if (!response) return [];
+  const ids = new Set<string>();
+  for (const key of ["id", "instanceId", "nodeId"] as const) {
+    const id = stringValue(response[key]);
+    if (id) ids.add(id);
+  }
+  for (const key of ["ids", "instanceIds"] as const) {
+    const values = response[key];
+    if (!Array.isArray(values)) continue;
+    for (const value of values) {
+      const id = stringValue(value);
+      if (id) ids.add(id);
+    }
+  }
+  if (Array.isArray(response.instances)) {
+    for (const value of response.instances) {
+      const instance = recordValue(value);
+      const id = stringValue(value) ?? stringValue(instance?.id) ?? stringValue(instance?.instanceId) ?? stringValue(instance?.nodeId);
+      if (id) ids.add(id);
+    }
+  }
+  return [...ids];
+}
+
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
@@ -481,8 +515,8 @@ function normalizeAssemblyInstances(definition: Record<string, unknown>): Assemb
       ...(stringValue(instance.documentMicroversion) ? { documentMicroversion: String(instance.documentMicroversion) } : {}),
       ...(stringValue(instance.partId) ? { partId: String(instance.partId) } : {}),
       configuration: stringValue(instance.fullConfiguration) ?? stringValue(instance.configuration) ?? "",
-      isAssembly: type.toLocaleLowerCase() === "assembly",
-      isWholePartStudio: type.toLocaleLowerCase().includes("partstudio")
+      isAssembly: instance.isAssembly === true || type.toLocaleLowerCase() === "assembly",
+      isWholePartStudio: instance.isWholePartStudio === true || type.toLocaleLowerCase().includes("partstudio")
     }];
   });
 }
@@ -558,6 +592,48 @@ function searchTokens(value: string): string[] {
   const stopWords = new Set(["a", "an", "and", "are", "at", "be", "can", "do", "for", "from", "i", "in", "into", "is", "it", "me", "of", "on", "or", "place", "put", "the", "this", "to", "use", "with"]);
   return [...new Set(value.toLocaleLowerCase().match(/[a-z0-9]+/gu) ?? [])]
     .filter((token) => token.length > 1 && !stopWords.has(token));
+}
+
+function decodeConfigurationComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function configurationValueMap(configuration: string): Map<string, string> {
+  const values = new Map<string, string>();
+  for (const entry of configuration.split(";")) {
+    const separator = entry.indexOf("=");
+    if (separator <= 0) continue;
+    values.set(
+      decodeConfigurationComponent(entry.slice(0, separator)),
+      decodeConfigurationComponent(entry.slice(separator + 1))
+    );
+  }
+  return values;
+}
+
+function describeConfigurationValues(configuration: string, response: unknown): AssemblyConfigurationValue[] {
+  const parameters = recordValue(response)?.configurationParameters;
+  if (!Array.isArray(parameters)) return [];
+  const currentValues = configurationValueMap(configuration);
+  return parameters.flatMap((value) => {
+    const parameter = recordValue(value);
+    const parameterId = stringValue(parameter?.parameterId);
+    if (!parameter || !parameterId) return [];
+    const rawValue = currentValues.get(parameterId);
+    if (rawValue === undefined) return [];
+    const options = Array.isArray(parameter.options) ? parameter.options : [];
+    const matchingOption = options.map(recordValue).find((option) => stringValue(option?.option) === rawValue);
+    return [{
+      parameterId,
+      parameterName: stringValue(parameter.parameterName) ?? parameterId,
+      encodedValue: rawValue,
+      displayValue: stringValue(matchingOption?.optionName) ?? rawValue
+    }];
+  });
 }
 
 function relevanceScore(query: string, value: string): number {
@@ -641,31 +717,44 @@ export interface OnshapeClientOptions {
   baseUrl?: string;
   apiVersion?: string;
   frcDesignBaseUrl?: string;
+  requestTimeoutMs?: number;
 }
 
 export class OnshapeClient {
   private readonly baseUrl: string;
   private readonly apiVersion: string;
   private readonly frcDesignBaseUrl: string;
+  private readonly requestTimeoutMs: number;
 
   constructor(private readonly options: OnshapeClientOptions) {
     this.baseUrl = (options.baseUrl ?? "https://cad.onshape.com").replace(/\/$/, "");
     this.apiVersion = options.apiVersion ?? "v16";
     this.frcDesignBaseUrl = (options.frcDesignBaseUrl ?? "https://app.frcdesign.org").replace(/\/$/, "");
+    this.requestTimeoutMs = options.requestTimeoutMs ?? 60_000;
   }
 
   private async request<T>(path: string, init: RequestInit = {}, retryAuth = true, rateLimitAttempt = 0): Promise<T> {
     const accessToken = await this.options.accessToken();
-    const response = await fetch(`${this.baseUrl}/api/${this.apiVersion}${path}`, {
-      ...init,
-      headers: {
-        accept: "application/json;charset=UTF-8; qs=0.09",
-        authorization: `Bearer ${accessToken}`,
-        ...(init.body ? { "content-type": "application/json;charset=UTF-8; qs=0.09" } : {}),
-        ...init.headers
-      },
-      redirect: "follow"
-    });
+    let response: Response;
+    try {
+      const timeoutSignal = AbortSignal.timeout(this.requestTimeoutMs);
+      response = await fetch(`${this.baseUrl}/api/${this.apiVersion}${path}`, {
+        ...init,
+        headers: {
+          accept: "application/json;charset=UTF-8; qs=0.09",
+          authorization: `Bearer ${accessToken}`,
+          ...(init.body ? { "content-type": "application/json;charset=UTF-8; qs=0.09" } : {}),
+          ...init.headers
+        },
+        redirect: "follow",
+        signal: init.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal
+      });
+    } catch (error) {
+      if (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name)) {
+        throw new OnshapeApiError("Onshape API request timed out.", 504, null);
+      }
+      throw error;
+    }
 
     if (response.status === 401 && retryAuth && this.options.refreshAccessToken) {
       await this.options.refreshAccessToken();
@@ -753,17 +842,90 @@ export class OnshapeClient {
     );
   }
 
+  private async enrichAssemblyInstanceConfigurations(
+    instances: AssemblyInstanceSummary[],
+    prompt: string
+  ): Promise<{ instances: AssemblyInstanceSummary[]; warnings: string[] }> {
+    const promptTokens = searchTokens(prompt);
+    if (promptTokens.length === 0) return { instances, warnings: [] };
+    const ranked = instances.map((instance, index) => ({
+      instance,
+      index,
+      score: promptTokens.reduce((score, token) => {
+        const singular = token.endsWith("s") ? token.slice(0, -1) : token;
+        const searchable = `${instance.name} ${instance.configuration}`.toLocaleLowerCase();
+        return score + (searchable.includes(token) || (singular.length > 2 && searchable.includes(singular)) ? 1 : 0);
+      }, 0)
+    })).sort((left, right) => right.score - left.score || left.index - right.index);
+    const hasRelevantInstance = ranked.some(({ score }) => score > 0);
+    const configurationIntent = /\b(configur(?:e|ation|ed)?|durometer|hardness|harder|softer|diameter|length|width|bore|size|material|colou?r)\b/iu.test(prompt);
+    if (!hasRelevantInstance && !configurationIntent) return { instances, warnings: [] };
+    const relevant = hasRelevantInstance ? ranked.filter(({ score }) => score > 0) : ranked;
+    const sourceInstances = new Map<string, AssemblyInstanceSummary>();
+    for (const { instance } of relevant) {
+      if (!instance.documentId || !instance.elementId || (!instance.documentVersion && !instance.documentMicroversion)) continue;
+      const sourceKey = JSON.stringify([
+        instance.documentId,
+        instance.elementId,
+        instance.documentVersion ?? null,
+        instance.documentMicroversion ?? null
+      ]);
+      if (!sourceInstances.has(sourceKey)) sourceInstances.set(sourceKey, instance);
+      if (sourceInstances.size >= 12) break;
+    }
+
+    const schemas = new Map<string, unknown>();
+    let failedReads = 0;
+    await Promise.all([...sourceInstances.entries()].map(async ([sourceKey, instance]) => {
+      const selector = instance.documentVersion
+        ? `v/${encodeURIComponent(instance.documentVersion)}`
+        : `m/${encodeURIComponent(instance.documentMicroversion!)}`;
+      try {
+        const response = await this.request<unknown>(
+          `/elements/d/${encodeURIComponent(instance.documentId!)}/${selector}/e/${encodeURIComponent(instance.elementId!)}/configuration`
+        );
+        schemas.set(sourceKey, response);
+      } catch {
+        failedReads += 1;
+      }
+    }));
+
+    const enriched = instances.map((instance) => {
+      const sourceKey = JSON.stringify([
+        instance.documentId ?? null,
+        instance.elementId ?? null,
+        instance.documentVersion ?? null,
+        instance.documentMicroversion ?? null
+      ]);
+      const schema = schemas.get(sourceKey);
+      if (!schema) return instance;
+      const configurationValues = describeConfigurationValues(instance.configuration, schema);
+      return configurationValues.length > 0 ? { ...instance, configurationValues } : instance;
+    });
+    return {
+      instances: enriched,
+      warnings: failedReads > 0
+        ? [`${failedReads} relevant component configuration definition(s) could not be decoded; raw configuration tokens are opaque IDs and must not be interpreted as display labels.`]
+        : []
+    };
+  }
+
   async inspectAssembly(
     context: OnshapeElementContext,
     existingDefinition?: Record<string, unknown>,
-    libraryCandidates: FrcLibraryComponentCandidate[] = []
+    libraryCandidates: FrcLibraryComponentCandidate[] = [],
+    configurationPrompt = ""
   ): Promise<AssemblyInspection> {
     const definition = existingDefinition ?? await this.getAssemblyDefinition(context);
     const root = assemblyRoot(definition);
-    const instances = normalizeAssemblyInstances(definition);
+    const normalizedInstances = normalizeAssemblyInstances(definition);
+    const configurationResult = configurationPrompt
+      ? await this.enrichAssemblyInstanceConfigurations(normalizedInstances, configurationPrompt)
+      : { instances: normalizedInstances, warnings: [] };
+    const instances = configurationResult.instances;
     const occurrences = normalizeAssemblyOccurrences(definition);
     const features = normalizeAssemblyFeatures(definition);
-    const warnings: string[] = [];
+    const warnings: string[] = [...configurationResult.warnings];
     if (instances.length > 0 && occurrences.length === 0) {
       warnings.push("Onshape returned assembly instances without occurrence transforms, so placement planning is unavailable until transforms can be read.");
     }
@@ -806,10 +968,18 @@ export class OnshapeClient {
   }
 
   async searchFrcDesignLibrary(prompt: string, limit = 12): Promise<FrcLibraryComponentCandidate[]> {
-    const response = await fetch(
-      `${this.frcDesignBaseUrl}/api/library/frc-design-lib?currentAccessLevel=user&cacheVersion=68`,
-      { headers: { accept: "application/json" } }
-    );
+    let response: Response;
+    try {
+      response = await fetch(
+        `${this.frcDesignBaseUrl}/api/library/frc-design-lib?currentAccessLevel=user&cacheVersion=68`,
+        { headers: { accept: "application/json" }, signal: AbortSignal.timeout(Math.min(this.requestTimeoutMs, 30_000)) }
+      );
+    } catch (error) {
+      if (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name)) {
+        throw new Error("FRCDesignLib catalog request timed out.");
+      }
+      throw error;
+    }
     if (!response.ok) throw new Error(`FRCDesignLib catalog request failed (${response.status}).`);
     const catalog = await response.json() as FrcCatalogResponse;
     const documents = catalog.documents ?? {};
@@ -1093,9 +1263,33 @@ export class OnshapeClient {
       const beforeIds = new Set(before.instances.map((instance) => instance.id));
       const insertResponse = await this.createAssemblyInstance(context, operation);
       const afterInsert = await this.inspectAssembly(context);
-      const inserted = afterInsert.instances.filter((instance) => !beforeIds.has(instance.id));
+      const responseIds = new Set(createdAssemblyInstanceIds(insertResponse));
+      const newInstances = afterInsert.instances.filter((instance) => !beforeIds.has(instance.id));
+      const insertionCandidates = responseIds.size > 0
+        ? newInstances.filter((instance) => responseIds.has(instance.id))
+        : newInstances;
+      const inserted = insertionCandidates.filter((instance) => {
+        if (instance.documentId !== operation.sourceDocumentId || instance.elementId !== operation.sourceElementId) return false;
+        if (operation.sourceVersionId && instance.documentVersion !== operation.sourceVersionId) return false;
+        if (!operation.sourceVersionId && operation.sourceMicroversionId && instance.documentMicroversion !== operation.sourceMicroversionId) return false;
+        if (operation.partId && instance.partId !== operation.partId) return false;
+        return instance.isAssembly === operation.isAssembly;
+      });
       if (inserted.length === 0) {
-        throw new Error(`Onshape did not report a new instance after inserting ${operation.componentName}.`);
+        if (insertionCandidates.length > 0 && responseIds.size > 0) {
+          await this.modifyAssembly(context, {
+            editDescription: `MorAssistant rolled back an unverified ${operation.componentName} insertion`,
+            deleteInstances: insertionCandidates.map((instance) => instance.id)
+          }).catch(() => undefined);
+        }
+        throw new Error(`Onshape did not report a new instance matching the approved source for ${operation.componentName}.`);
+      }
+      if (!operation.isWholePartStudio && inserted.length !== 1) {
+        await this.modifyAssembly(context, {
+          editDescription: `MorAssistant rolled back an ambiguous ${operation.componentName} insertion`,
+          deleteInstances: inserted.map((instance) => instance.id)
+        }).catch(() => undefined);
+        throw new Error(`Onshape reported ${inserted.length} new instances for the single approved ${operation.componentName} insertion.`);
       }
       try {
         const transformResponse = await this.modifyAssembly(context, {

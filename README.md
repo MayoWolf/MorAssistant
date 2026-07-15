@@ -49,7 +49,7 @@ The personal deployment pins **GPT‑5.6 Sol at high reasoning effort**, verifie
 
 ### What “Adam-like” means here
 
-Each Part Studio and Assembly has its own durable Codex conversation. The visible transcript survives panel reloads, the underlying app-server thread survives backend restarts, and follow-up turns retain names, dimensions, component references, corrections, and design intent. Before every new reply, MorAssistant still re-reads the live feature tree or assembly definition so conversation memory never overrides actual CAD state. If a saved Codex rollout cannot be reopened, the backend seeds a replacement thread from the recent encrypted transcript.
+Each Part Studio and Assembly has its own durable Codex conversation. The visible transcript survives panel reloads, the underlying app-server thread survives backend restarts, and follow-up turns retain names, dimensions, component references, corrections, and design intent. Before every new reply, MorAssistant reads the current model or reuses only a recent exact-microversion encrypted snapshot; approval always revalidates the live model, so conversation memory never overrides actual CAD state. If a saved Codex rollout cannot be reopened, the backend seeds a replacement thread from the recent encrypted transcript.
 
 The agent operates on the model’s real feature history, not on a screenshot and not by hallucinating CAD JSON. Sol chooses from a typed CAD vocabulary; deterministic builders compile common intent into native Onshape features; the trusted host checks dependencies and regeneration after every operation. The raw-feature route remains an escape hatch for less common Part Studio features, not the default for basic geometry. Informational follow-ups can return a normal chat answer with no CAD operations and no approval button.
 
@@ -159,8 +159,9 @@ MorAssistant now uses two complementary knowledge layers. The versioned **177-to
 | Update existing quantity expressions | ✅ | Exact parameter ID and current-expression match |
 | Verify every operation against regeneration | ✅ | Stop immediately on the first newly introduced Onshape error |
 | Read the active Assembly | ✅ | Instances, source tuples, mates/features, occurrence paths, suppression state, and absolute transforms |
+| Decode component configurations | ✅ | Resolves opaque Onshape option IDs to authoritative display labels before Sol reasons about size, bore, color, durometer, and other configured values |
 | Search and import FRCDesignLib components | ✅ | Public FRCDesignApp catalog discovery plus authenticated Onshape version/part resolution; only trusted exact source tuples validate |
-| Place Assembly instances | ✅ | Absolute object-to-world 4×4 transforms in meters, exact occurrence paths, snapshot hashes, and post-apply verification |
+| Place Assembly instances | ✅ | Rigid, proper object-to-world 4×4 transforms in meters; exact occurrence paths, snapshot hashes, and post-apply verification |
 | Suppress, unsuppress, and delete Assembly instances | ✅ | Exact instance ID/name/state checks; deletion is always high risk |
 | Roll back an incomplete component insertion | ✅ | If placement fails after insertion, the new instance is deleted before the failure is returned |
 | Prepare a recovery plan after failure | ✅ | Re-reads partially changed state; recovery requires a fresh approval |
@@ -216,7 +217,7 @@ The model never receives an Onshape OAuth token, never sends arbitrary REST requ
 - **Per-operation verification** — execution stops on the first operation that introduces a new regeneration error.
 - **Approval-gated recovery** — a failed run can generate an alternate plan from the refreshed model, but cannot apply it automatically.
 - **Rate-aware inspection** — unchanged-microversion geometry evidence and verified feature snapshots are cached in encrypted storage, duplicate reads are avoided, and Onshape `Retry-After` windows are honored automatically.
-- **Throttle-safe continuation** — if Onshape throttles feature-list reads, planning uses the last verified snapshot and approved mutations retain `rejectMicroversionSkew: true`; successful mutation responses advance the guarded snapshot without guessing.
+- **Throttle-safe continuation** — if Onshape throttles Part Studio or Assembly reads, planning uses the last encrypted verified snapshot; approval still re-reads the Assembly or retains Part Studio's exact `rejectMicroversionSkew: true` guard.
 - **Replay resistance** — pending plans transition atomically and cannot be applied twice.
 - **Origin checks** — state-changing browser requests must come from the configured panel origin.
 - **Minimum secrets exposure** — Codex child processes inherit a deliberately small environment with no backend OAuth secrets.
@@ -325,7 +326,7 @@ See:
 
 ## Onshape App Store
 
-The app is registered as an **Integrated Cloud App** with an **Element right panel** extension scoped to **Inside part studio**. The release playbook covers the private listing, subscription flow, beta matrix, Onshape QA, and public launch requirements:
+The app is registered as an **Integrated Cloud App** with **Element right panel** extensions scoped to **Inside part studio** and **Inside assembly**. The release playbook covers the private listing, subscription flow, beta matrix, Onshape QA, and public launch requirements:
 
 **[Read the App Store release and test checklist →](docs/app-store-release-checklist.md)**
 

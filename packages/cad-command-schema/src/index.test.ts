@@ -426,9 +426,19 @@ describe("CAD plan validation", () => {
       occurrences: [{ path: ["shaft-1"], transform: identity }],
       trustedSources: [source]
     };
+    const insertionOperation = insertion.operations[0];
+    if (insertionOperation?.type !== "insert_assembly_component") throw new Error("Expected an insertion operation fixture.");
     expect(validatePlanAgainstAssembly(insertion, snapshot)).toBe(insertion);
     expect(() => validatePlanAgainstAssembly(insertion, { ...snapshot, trustedSources: [] }))
       .toThrow("not present in the inspected assembly or trusted FRCDesignLib results");
+    expect(() => validatePlanAgainstAssembly({
+      ...insertion,
+      operations: [{ ...insertionOperation, sourceVersionId: "different-version" }]
+    }, snapshot)).toThrow("not present in the inspected assembly or trusted FRCDesignLib results");
+    expect(() => validatePlanAgainstAssembly({
+      ...insertion,
+      operations: [{ ...insertionOperation, sourceMicroversionId: "different-microversion" }]
+    }, snapshot)).toThrow("not present in the inspected assembly or trusted FRCDesignLib results");
 
     const placement = cadPlanSchema.parse({
       summary: "Move the shaft",
@@ -445,7 +455,17 @@ describe("CAD plan validation", () => {
       warnings: [],
       requiresApproval: true
     });
+    const placementOperation = placement.operations[0];
+    if (placementOperation?.type !== "transform_assembly_instance") throw new Error("Expected a transform operation fixture.");
     expect(validatePlanAgainstAssembly(placement, snapshot)).toBe(placement);
+    expect(() => validatePlanAgainstAssembly({
+      ...placement,
+      operations: [{ ...placementOperation, transform: [2, 0, 0, 0.1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] }]
+    }, snapshot)).toThrow("without scale or shear");
+    expect(() => validatePlanAgainstAssembly({
+      ...placement,
+      operations: [{ ...placementOperation, transform: [-1, 0, 0, 0.1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] }]
+    }, snapshot)).toThrow("cannot mirror components");
     expect(() => validatePlanAgainstAssembly(placement, {
       ...snapshot,
       occurrences: [{ path: ["shaft-1"], transform: [1, 0, 0, 0.01, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1] }]
