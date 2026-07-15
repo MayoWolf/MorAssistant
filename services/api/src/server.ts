@@ -11,6 +11,7 @@ import Fastify, { LogController, type FastifyReply, type FastifyRequest } from "
 import { z } from "zod";
 import {
   cadPlanSchema,
+  validatePlanAgainstAssembly,
   validatePlanAgainstIntent,
   validatePlanAgainstFeatureTree,
   type CadOperation,
@@ -33,12 +34,13 @@ import {
   refreshOnshapeTokens,
   type FeatureListResponse,
   type FeatureSpecsResponse,
+  type AssemblyInspection,
   type OnshapeOAuthConfig,
   type OnshapeFeature,
   type PartStudioGeometryEvidence,
   type OnshapeTokens
 } from "@morassistant/onshape-client";
-import type { PartStudioContext } from "@morassistant/shared-types";
+import type { OnshapeElementContext, OnshapeElementType, PartStudioContext } from "@morassistant/shared-types";
 import { SessionStore, type UserSession } from "./session-store.js";
 
 const repositoryRoot = fileURLToPath(new URL("../../../", import.meta.url));
@@ -59,6 +61,7 @@ const envSchema = z.object({
   ONSHAPE_TOKEN_URL: z.string().url().default("https://oauth.onshape.com/oauth/token"),
   ONSHAPE_BASE_URL: z.string().url().default("https://cad.onshape.com"),
   ONSHAPE_API_VERSION: z.string().default("v16"),
+  FRC_DESIGN_BASE_URL: z.string().url().default("https://app.frcdesign.org"),
   ONSHAPE_SNAPSHOT_FRESH_MS: z.coerce.number().int().min(0).max(3_600_000).default(5 * 60_000),
   CODEX_MODEL: z.string().min(1).optional(),
   CODEX_REASONING_EFFORT: z.enum(["none", "minimal", "low", "medium", "high", "xhigh"]).optional(),
@@ -88,6 +91,7 @@ if (env.NODE_ENV === "production") {
     ["ONSHAPE_BASE_URL", env.ONSHAPE_BASE_URL],
     ["ONSHAPE_AUTHORIZATION_URL", env.ONSHAPE_AUTHORIZATION_URL],
     ["ONSHAPE_TOKEN_URL", env.ONSHAPE_TOKEN_URL],
+    ["FRC_DESIGN_BASE_URL", env.FRC_DESIGN_BASE_URL],
     ...(env.ONSHAPE_REDIRECT_URI ? [["ONSHAPE_REDIRECT_URI", env.ONSHAPE_REDIRECT_URI]] : [])
   ]) {
     if (!value || new URL(value).protocol !== "https:") throw new Error(`${name} must use HTTPS in production.`);
@@ -174,7 +178,7 @@ function pruneFeatureSpecsCache(now = Date.now()): void {
   }
 }
 
-function partStudioSnapshotKey(context: PartStudioContext): string {
+function elementContextKey(context: OnshapeElementContext): string {
   return createHash("sha256").update(JSON.stringify([
     context.server ?? env.ONSHAPE_BASE_URL,
     env.ONSHAPE_API_VERSION,
@@ -243,6 +247,10 @@ function treeFromMutationResponse(
   operation: CadOperation,
   response: unknown
 ): FeatureListResponse | undefined {
+  if (operation.type === "insert_assembly_component" ||
+    operation.type === "transform_assembly_instance" ||
+    operation.type === "set_assembly_instance_suppressed" ||
+    operation.type === "delete_assembly_instance") return undefined;
   const result = responseRecord(response);
   const sourceMicroversion = result?.sourceMicroversion;
   if (!result || typeof sourceMicroversion !== "string" || sourceMicroversion.length === 0) return undefined;
@@ -298,19 +306,105 @@ const planRequestSchema = z.object({
   context: z.unknown()
 }).strict();
 
-function parsePlanRequest(value: unknown): { prompt: string; context: PartStudioContext } {
+function parsePlanRequest(value: unknown): { prompt: string; context: OnshapeElementContext } {
   const input = planRequestSchema.parse(value);
   return { prompt: input.prompt, context: parseContext(input.context) };
 }
 
-async function createStoredPlan(
+async function createStoredAssemblyPlan(
   session: UserSession,
-  body: { prompt: string; context: PartStudioContext },
+  body: { prompt: string; context: OnshapeElementContext },
+  snapshotKey: string,
   recoveryForPlanId?: string,
   onProgress?: PlanningProgressCallback
 ): Promise<StoredCadPlan> {
   const client = clientFor(session, body.context);
-  const snapshotKey = partStudioSnapshotKey(body.context);
+  const [definition, candidatesResult] = await Promise.all([
+    client.getAssemblyDefinition(body.context),
+    client.searchFrcDesignLibrary(body.prompt).then(
+      (candidates) => ({ candidates, warning: undefined as string | undefined }),
+      () => ({
+        candidates: [],
+        warning: "FRCDesignLib's public component catalog was temporarily unavailable. Existing assembly components remain available for inspection and cloning."
+      })
+    )
+  ]);
+  const rawInspection = await client.inspectAssembly(body.context, definition, candidatesResult.candidates);
+  const inspection: AssemblyInspection = {
+    ...rawInspection,
+    warnings: [...rawInspection.warnings, ...(candidatesResult.warning ? [candidatesResult.warning] : [])]
+  };
+  const priorTurns = [...session.plans.values()]
+    .filter((candidate) => elementContextKey(candidate.context) === snapshotKey)
+    .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt))
+    .slice(-12)
+    .map((candidate) => ({
+      prompt: candidate.prompt,
+      summary: candidate.summary,
+      ...(candidate.message ? { message: candidate.message } : {}),
+      status: candidate.status
+    }));
+  const planning = await workers.forUser(session.id).createPlan(body.prompt, inspection, onProgress, {
+    ...(session.codexThreads.get(snapshotKey) ? { threadId: session.codexThreads.get(snapshotKey)! } : {}),
+    priorTurns
+  });
+  session.codexThreads.set(snapshotKey, planning.threadId);
+  const plan = cadPlanSchema.parse(planning.plan);
+  validatePlanAgainstAssembly(plan, inspection);
+  const stored: StoredCadPlan = {
+    ...plan,
+    id: randomUUID(),
+    context: body.context,
+    prompt: body.prompt,
+    status: plan.operations.length === 0 ? "applied" : "pending",
+    createdAt: new Date().toISOString(),
+    agentTrace: {
+      planningAttempts: planning.attempts,
+      elementType: "ASSEMBLY",
+      continuedConversation: planning.continuedConversation,
+      runtime: {
+        ...(planning.runtime.configuredModel ? { configuredModel: planning.runtime.configuredModel } : {}),
+        model: planning.runtime.model,
+        ...(planning.runtime.modelProvider ? { modelProvider: planning.runtime.modelProvider } : {}),
+        ...(planning.runtime.reasoningEffort ? { reasoningEffort: planning.runtime.reasoningEffort } : {}),
+        ...(planning.runtime.serviceTier ? { serviceTier: planning.runtime.serviceTier } : {})
+      },
+      featureCount: planning.inspection.featureCount,
+      ...(planning.inspection.instanceCount !== undefined ? { instanceCount: planning.inspection.instanceCount } : {}),
+      capabilityCount: planning.inspection.capabilityCount,
+      nativeFeatureTypeCount: planning.inspection.nativeFeatureTypeCount,
+      capabilityCatalogVersion: planning.inspection.capabilityCatalogVersion,
+      dependencyCount: planning.inspection.dependencyCount,
+      geometry: planning.inspection.geometry,
+      inspectionWarnings: planning.inspection.warnings
+    },
+    ...(inspection.documentMicroversion ? { sourceMicroversion: inspection.documentMicroversion } : {}),
+    assemblyTrustedSources: inspection.trustedSources,
+    ...(recoveryForPlanId ? { recoveryForPlanId } : {})
+  };
+  while (session.plans.size >= 100) {
+    const oldestPlanId = session.plans.keys().next().value as string | undefined;
+    if (!oldestPlanId) break;
+    session.plans.delete(oldestPlanId);
+  }
+  session.plans.set(stored.id, stored);
+  saveSession(session);
+  return stored;
+}
+
+async function createStoredPlan(
+  session: UserSession,
+  body: { prompt: string; context: OnshapeElementContext },
+  recoveryForPlanId?: string,
+  onProgress?: PlanningProgressCallback
+): Promise<StoredCadPlan> {
+  const client = clientFor(session, body.context);
+  const resolvedContext = await resolveElementContext(session, body.context);
+  body = { ...body, context: resolvedContext };
+  const snapshotKey = elementContextKey(body.context);
+  if (body.context.elementType === "ASSEMBLY") {
+    return createStoredAssemblyPlan(session, body, snapshotKey, recoveryForPlanId, onProgress);
+  }
   const storedSnapshot = session.partStudioSnapshots.get(snapshotKey);
   let usedStoredSnapshot = false;
   let rateLimitFallback = false;
@@ -367,7 +461,7 @@ async function createStoredPlan(
     storePartStudioSnapshot(session, snapshotKey, featureTree, geometryEvidence(rawInspection));
   }
   const priorTurns = [...session.plans.values()]
-    .filter((candidate) => partStudioSnapshotKey(candidate.context) === snapshotKey)
+    .filter((candidate) => elementContextKey(candidate.context) === snapshotKey)
     .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt))
     .slice(-12)
     .map((candidate) => ({
@@ -395,6 +489,7 @@ async function createStoredPlan(
     createdAt: new Date().toISOString(),
     agentTrace: {
       planningAttempts: planning.attempts,
+      elementType: "PARTSTUDIO",
       continuedConversation: planning.continuedConversation,
       runtime: {
         ...(planning.runtime.configuredModel ? { configuredModel: planning.runtime.configuredModel } : {}),
@@ -456,8 +551,127 @@ function recoveryPrompt(plan: StoredCadPlan): string {
     operationResults,
     "New regeneration errors:",
     regeneration,
-    "Inspect the current Part Studio snapshot, account for operations that already applied, and propose the smallest safe alternate plan that still completes the original request. Do not repeat successful work. The recovery plan will receive its own explicit user approval."
+    `Inspect the current ${plan.context.elementType === "ASSEMBLY" ? "Assembly" : "Part Studio"} snapshot, account for operations that already applied, and propose the smallest safe alternate plan that still completes the original request. Do not repeat successful work. The recovery plan will receive its own explicit user approval.`
   ].join("\n\n").slice(0, 4_000);
+}
+
+function transformsMatch(left: number[], right: number[], tolerance = 1e-8): boolean {
+  return left.length === 16 && right.length === 16 && left.every((value, index) =>
+    Number.isFinite(value) && Number.isFinite(right[index]) && Math.abs(value - right[index]!) <= tolerance
+  );
+}
+
+function verifyAssemblyOperation(
+  operation: CadOperation,
+  inspection: AssemblyInspection,
+  response: unknown
+): string {
+  if (operation.type === "insert_assembly_component") {
+    const ids = responseRecord(responseRecord(response)?.response)?.instanceIds ?? responseRecord(response)?.instanceIds;
+    if (!Array.isArray(ids) || ids.length === 0 || !ids.every((id) => typeof id === "string")) {
+      throw new Error(`Onshape did not identify the inserted ${operation.componentName} instance for verification.`);
+    }
+    for (const id of ids as string[]) {
+      const occurrence = inspection.occurrences.find((candidate) => candidate.path.length === 1 && candidate.path[0] === id);
+      if (!occurrence || !transformsMatch(occurrence.transform, operation.transform)) {
+        throw new Error(`Inserted ${operation.componentName} was not found at its approved placement.`);
+      }
+    }
+    return `Verified ${ids.length} inserted occurrence${ids.length === 1 ? "" : "s"} at the approved absolute transform.`;
+  }
+  if (operation.type === "transform_assembly_instance") {
+    const occurrence = inspection.occurrences.find((candidate) =>
+      candidate.path.length === operation.occurrencePath.length && candidate.path.every((id, index) => id === operation.occurrencePath[index])
+    );
+    if (!occurrence || !transformsMatch(occurrence.transform, operation.transform)) {
+      throw new Error(`${operation.instanceName} did not reach its approved placement.`);
+    }
+    return "Verified the absolute occurrence transform.";
+  }
+  if (operation.type === "set_assembly_instance_suppressed") {
+    const instance = inspection.instances.find((candidate) => candidate.id === operation.instanceId);
+    if (!instance || instance.suppressed !== operation.suppressed) {
+      throw new Error(`${operation.instanceName} did not reach its approved suppression state.`);
+    }
+    return `Verified ${operation.suppressed ? "suppressed" : "unsuppressed"} state.`;
+  }
+  if (operation.type === "delete_assembly_instance") {
+    if (inspection.instances.some((candidate) => candidate.id === operation.instanceId)) {
+      throw new Error(`${operation.instanceName} still exists after Onshape accepted the delete request.`);
+    }
+    return "Verified the instance was removed.";
+  }
+  throw new Error(`${operation.type} is not an Assembly operation.`);
+}
+
+async function applyStoredAssemblyPlan(
+  session: UserSession,
+  plan: StoredCadPlan,
+  client: OnshapeClient
+): Promise<StoredCadPlan> {
+  plan.status = "applying";
+  saveSession(session);
+  let inspection: AssemblyInspection;
+  try {
+    inspection = await client.inspectAssembly(plan.context);
+    if (plan.sourceMicroversion && inspection.documentMicroversion !== plan.sourceMicroversion) {
+      throw new Error("The Assembly changed after the plan preview. Create a fresh plan before applying changes.");
+    }
+    validatePlanAgainstAssembly(plan, {
+      ...inspection,
+      trustedSources: plan.assemblyTrustedSources ?? inspection.trustedSources
+    });
+  } catch (error) {
+    plan.status = "pending";
+    saveSession(session);
+    throw error;
+  }
+
+  const operations: OperationExecutionResult[] = [];
+  for (const [index, operation] of plan.operations.entries()) {
+    try {
+      const applied = await client.applyAssemblyOperationDetailed(plan.context, operation, inspection);
+      try {
+        inspection = await client.inspectAssembly(plan.context);
+        const verification = verifyAssemblyOperation(operation, inspection, applied.response);
+        operations.push({
+          index,
+          operation,
+          status: "applied",
+          verification: "passed",
+          message: `${applied.message} ${verification}`
+        });
+      } catch (error) {
+        operations.push({
+          index,
+          operation,
+          status: "failed",
+          verification: "failed",
+          message: `${applied.message} ${error instanceof Error ? error.message : "Assembly verification failed."}`
+        });
+        break;
+      }
+    } catch (error) {
+      operations.push({
+        index,
+        operation,
+        status: "failed",
+        verification: "not_run",
+        message: error instanceof Error ? error.message : "Unknown Assembly operation failure."
+      });
+      break;
+    }
+  }
+  const failed = operations.length < plan.operations.length || operations.some((operation) => operation.status === "failed");
+  plan.status = failed ? "failed" : "applied";
+  plan.result = {
+    status: plan.status,
+    operations,
+    regenerationErrors: [],
+    preexistingRegenerationErrors: []
+  };
+  saveSession(session);
+  return plan;
 }
 
 function getCookieSession(request: FastifyRequest, reply: FastifyReply): UserSession {
@@ -569,7 +783,7 @@ async function refreshSessionTokens(session: UserSession): Promise<OnshapeTokens
   return session.onshapeRefresh;
 }
 
-function clientFor(session: UserSession, context?: PartStudioContext): OnshapeClient {
+function clientFor(session: UserSession, context?: OnshapeElementContext): OnshapeClient {
   if (!session.onshapeTokens) throw new Error("Onshape access is not available for this installed extension.");
   return new OnshapeClient({
     accessToken: async () => {
@@ -578,7 +792,8 @@ function clientFor(session: UserSession, context?: PartStudioContext): OnshapeCl
     },
     refreshAccessToken: async () => (await refreshSessionTokens(session)).accessToken,
     baseUrl: context?.server ?? env.ONSHAPE_BASE_URL,
-    apiVersion: env.ONSHAPE_API_VERSION
+    apiVersion: env.ONSHAPE_API_VERSION,
+    frcDesignBaseUrl: env.FRC_DESIGN_BASE_URL
   });
 }
 
@@ -589,7 +804,8 @@ const contextSchema = z.object({
   elementId: contextId,
   workspaceOrVersion: z.literal("w").optional(),
   configuration: z.string().max(4_000).optional(),
-  server: z.string().url().max(2_048).optional()
+  server: z.string().url().max(2_048).optional(),
+  elementType: z.enum(["PARTSTUDIO", "ASSEMBLY"]).optional()
 }).strict();
 
 function isSupportedOnshapeOrigin(origin: string): boolean {
@@ -598,7 +814,7 @@ function isSupportedOnshapeOrigin(origin: string): boolean {
   return url.protocol === "https:" && !url.port && (url.hostname === "onshape.com" || url.hostname.endsWith(".onshape.com"));
 }
 
-function parseContext(input: unknown): PartStudioContext {
+function parseContext(input: unknown): OnshapeElementContext {
   const context = contextSchema.parse(input);
   const configuration = context.configuration?.trim();
   const hasConfiguration = Boolean(
@@ -623,8 +839,34 @@ function parseContext(input: unknown): PartStudioContext {
     elementId: context.elementId,
     ...(context.workspaceOrVersion ? { workspaceOrVersion: context.workspaceOrVersion } : {}),
     ...(hasConfiguration ? { configuration: configuration! } : {}),
-    ...(context.server ? { server: new URL(context.server).origin } : {})
+    ...(context.server ? { server: new URL(context.server).origin } : {}),
+    ...(context.elementType ? { elementType: context.elementType } : {})
   };
+}
+
+const elementInfoCache = new Map<string, { capturedAt: number; elementType: OnshapeElementType; name: string }>();
+
+async function resolveElementContext(
+  session: UserSession,
+  context: OnshapeElementContext
+): Promise<OnshapeElementContext> {
+  if (context.elementType) return context;
+  const cacheKey = elementContextKey(context);
+  const cached = elementInfoCache.get(cacheKey);
+  if (cached && Date.now() - cached.capturedAt < 10 * 60_000) {
+    return { ...context, elementType: cached.elementType };
+  }
+  const info = await clientFor(session, context).getElementInfo(context);
+  if (info.elementType !== "PARTSTUDIO" && info.elementType !== "ASSEMBLY") {
+    throw new HttpError(400, `MorAssistant supports Part Studio and Assembly tabs; this tab is ${info.elementType}.`);
+  }
+  elementInfoCache.set(cacheKey, { capturedAt: Date.now(), elementType: info.elementType, name: info.name });
+  while (elementInfoCache.size > 200) {
+    const oldest = elementInfoCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    elementInfoCache.delete(oldest);
+  }
+  return { ...context, elementType: info.elementType };
 }
 
 class HttpError extends Error {
@@ -751,6 +993,22 @@ app.get("/api/status", async (request, reply) => {
   };
 });
 
+app.get("/api/context", async (request, reply) => {
+  const session = getSession(request, reply);
+  const context = parseContext(request.query);
+  const info = await clientFor(session, context).getElementInfo(context);
+  if (info.elementType !== "PARTSTUDIO" && info.elementType !== "ASSEMBLY") {
+    throw new HttpError(400, `MorAssistant supports Part Studio and Assembly tabs; this tab is ${info.elementType}.`);
+  }
+  const resolved = { ...context, elementType: info.elementType } satisfies OnshapeElementContext;
+  elementInfoCache.set(elementContextKey(context), {
+    capturedAt: Date.now(),
+    elementType: info.elementType,
+    name: info.name
+  });
+  return { context: resolved, name: info.name, elementType: info.elementType };
+});
+
 app.get("/oauth/onshape/start", async (request, reply) => {
   const query = z.object({
     redirectOnshapeUri: z.string().url().max(2_048).optional(),
@@ -849,9 +1107,9 @@ app.get("/api/features", async (request, reply) => {
 app.get("/api/conversation", async (request, reply) => {
   const session = getSession(request, reply);
   const context = parseContext(request.query);
-  const contextKey = partStudioSnapshotKey(context);
+  const contextKey = elementContextKey(context);
   const plans = [...session.plans.values()]
-    .filter((plan) => partStudioSnapshotKey(plan.context) === contextKey)
+    .filter((plan) => elementContextKey(plan.context) === contextKey)
     .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt))
     .slice(-50);
   return {
@@ -953,8 +1211,12 @@ app.post("/api/plans/:id/apply", async (request, reply) => {
   if (!plan) return reply.code(404).send({ error: "Plan not found." });
   if (plan.status !== "pending") return reply.code(409).send({ error: `Plan is already ${plan.status}.` });
 
+  plan.context = await resolveElementContext(session, plan.context);
   const client = clientFor(session, plan.context);
-  const snapshotKey = partStudioSnapshotKey(plan.context);
+  if (plan.context.elementType === "ASSEMBLY") {
+    return applyStoredAssemblyPlan(session, plan, client);
+  }
+  const snapshotKey = elementContextKey(plan.context);
   plan.status = "applying";
   saveSession(session);
   let preexistingRegenerationErrors: RegenerationError[];

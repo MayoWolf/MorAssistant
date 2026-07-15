@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { PartStudioContext } from "@morassistant/shared-types";
+import type { OnshapeElementContext, OnshapeElementType } from "@morassistant/shared-types";
 
 const safeId = z.string().min(1).max(200);
 const featureJson = z.string().min(2).max(100_000);
@@ -206,6 +207,49 @@ export const deleteFeatureOperationSchema = z.object({
   reason: z.string().min(1).max(500)
 }).strict();
 
+const transformSchema = z.array(z.number().finite()).length(16);
+
+export const insertAssemblyComponentOperationSchema = z.object({
+  type: z.literal("insert_assembly_component"),
+  componentName: z.string().trim().min(1).max(200),
+  sourceDocumentId: safeId,
+  sourceElementId: safeId,
+  sourceVersionId: safeId.nullable(),
+  sourceMicroversionId: safeId.nullable(),
+  partId: safeId.nullable(),
+  configuration: z.string().max(20_000),
+  isAssembly: z.boolean(),
+  isWholePartStudio: z.boolean(),
+  transform: transformSchema,
+  reason: z.string().min(1).max(500)
+}).strict();
+
+export const transformAssemblyInstanceOperationSchema = z.object({
+  type: z.literal("transform_assembly_instance"),
+  instanceId: safeId,
+  instanceName: z.string().min(1).max(200),
+  occurrencePath: z.array(safeId).min(1).max(20),
+  currentTransformHash: z.string().regex(/^[a-f0-9]{64}$/u),
+  transform: transformSchema,
+  reason: z.string().min(1).max(500)
+}).strict();
+
+export const setAssemblyInstanceSuppressedOperationSchema = z.object({
+  type: z.literal("set_assembly_instance_suppressed"),
+  instanceId: safeId,
+  instanceName: z.string().min(1).max(200),
+  currentSuppressed: z.boolean(),
+  suppressed: z.boolean(),
+  reason: z.string().min(1).max(500)
+}).strict();
+
+export const deleteAssemblyInstanceOperationSchema = z.object({
+  type: z.literal("delete_assembly_instance"),
+  instanceId: safeId,
+  instanceName: z.string().min(1).max(200),
+  reason: z.string().min(1).max(500)
+}).strict();
+
 export const cadOperationSchema = z.discriminatedUnion("type", [
   renameFeatureOperationSchema,
   updateDimensionOperationSchema,
@@ -216,7 +260,11 @@ export const cadOperationSchema = z.discriminatedUnion("type", [
   chamferFeatureEdgesOperationSchema,
   createFeatureOperationSchema,
   replaceFeatureOperationSchema,
-  deleteFeatureOperationSchema
+  deleteFeatureOperationSchema,
+  insertAssemblyComponentOperationSchema,
+  transformAssemblyInstanceOperationSchema,
+  setAssemblyInstanceSuppressedOperationSchema,
+  deleteAssemblyInstanceOperationSchema
 ]);
 
 export const researchSourceSchema = z.object({
@@ -237,7 +285,11 @@ export const cadPlanSchema = z.object({
   const wholeFeatureTargets = new Set<string>();
   const touchedFeatureTargets = new Set<string>();
   for (const [index, operation] of plan.operations.entries()) {
-    const target = operation.type === "rename_feature"
+    const target = operation.type === "insert_assembly_component"
+      ? `new-instance:${index}:${operation.componentName.toLocaleLowerCase()}`
+      : operation.type === "transform_assembly_instance" || operation.type === "set_assembly_instance_suppressed" || operation.type === "delete_assembly_instance"
+        ? `instance:${operation.instanceId}`
+        : operation.type === "rename_feature"
       ? `rename:${operation.featureId}`
       : operation.type === "update_dimension"
         ? `dimension:${operation.featureId}:${operation.parameterId}`
@@ -267,6 +319,15 @@ export const cadPlanSchema = z.object({
     if (operation.type === "delete_feature" && plan.risk !== "high") {
       context.addIssue({ code: "custom", path: ["risk"], message: "Plans that delete features must be high risk." });
     }
+    if (operation.type === "delete_assembly_instance" && plan.risk !== "high") {
+      context.addIssue({ code: "custom", path: ["risk"], message: "Plans that delete assembly instances must be high risk." });
+    }
+    if (operation.type === "set_assembly_instance_suppressed" && operation.currentSuppressed === operation.suppressed) {
+      context.addIssue({ code: "custom", path: ["operations", index, "suppressed"], message: "The suppression state must change." });
+    }
+    if (operation.type === "insert_assembly_component" && !operation.sourceVersionId && !operation.sourceMicroversionId) {
+      context.addIssue({ code: "custom", path: ["operations", index], message: "An inserted component needs a source version or microversion." });
+    }
     if (["create_feature", "replace_feature", "extrude_sketch", "fillet_feature_edges", "chamfer_feature_edges"].includes(operation.type) && plan.risk === "low") {
       context.addIssue({ code: "custom", path: ["risk"], message: "Native feature payload plans must be at least medium risk." });
     }
@@ -278,12 +339,13 @@ export type CadPlan = z.infer<typeof cadPlanSchema>;
 
 export interface StoredCadPlan extends CadPlan {
   id: string;
-  context: PartStudioContext;
+  context: OnshapeElementContext;
   prompt: string;
   status: "pending" | "applying" | "applied" | "failed";
   createdAt: string;
   agentTrace?: {
     planningAttempts: number;
+    elementType?: OnshapeElementType;
     continuedConversation?: boolean;
     runtime?: {
       configuredModel?: string;
@@ -293,6 +355,7 @@ export interface StoredCadPlan extends CadPlan {
       serviceTier?: string;
     };
     featureCount: number;
+    instanceCount?: number;
     capabilityCount?: number;
     nativeFeatureTypeCount?: number;
     capabilityCatalogVersion?: string;
@@ -311,6 +374,7 @@ export interface StoredCadPlan extends CadPlan {
     inspectionWarnings: string[];
   };
   sourceMicroversion?: string;
+  assemblyTrustedSources?: TrustedAssemblyComponentSource[];
   recoveryForPlanId?: string;
   result?: PlanExecutionResult;
 }
@@ -383,6 +447,22 @@ export const CAD_PLAN_JSON_SCHEMA = {
           "currentFeatureHash",
           "featureType",
           "featureJson",
+          "componentName",
+          "sourceDocumentId",
+          "sourceElementId",
+          "sourceVersionId",
+          "sourceMicroversionId",
+          "partId",
+          "configuration",
+          "isAssembly",
+          "isWholePartStudio",
+          "instanceId",
+          "instanceName",
+          "occurrencePath",
+          "currentTransformHash",
+          "transform",
+          "currentSuppressed",
+          "suppressed",
           "reason"
         ],
         properties: {
@@ -398,7 +478,11 @@ export const CAD_PLAN_JSON_SCHEMA = {
               "chamfer_feature_edges",
               "create_feature",
               "replace_feature",
-              "delete_feature"
+              "delete_feature",
+              "insert_assembly_component",
+              "transform_assembly_instance",
+              "set_assembly_instance_suppressed",
+              "delete_assembly_instance"
             ]
           },
           featureId: {
@@ -534,6 +618,79 @@ export const CAD_PLAN_JSON_SCHEMA = {
             type: ["string", "null"],
             maxLength: 100000,
             description: "Minified JSON for one BTMFeature-134 or BTMSketch-151 payload for create_feature or replace_feature; null otherwise."
+          },
+          componentName: {
+            type: ["string", "null"],
+            maxLength: 200,
+            description: "Display name for insert_assembly_component; null otherwise."
+          },
+          sourceDocumentId: {
+            type: ["string", "null"],
+            description: "Exact source Onshape document ID for insert_assembly_component; null otherwise."
+          },
+          sourceElementId: {
+            type: ["string", "null"],
+            description: "Exact source Part Studio or Assembly element ID for insert_assembly_component; null otherwise."
+          },
+          sourceVersionId: {
+            type: ["string", "null"],
+            description: "Immutable source version ID for insert_assembly_component, or null when a trusted microversion is supplied."
+          },
+          sourceMicroversionId: {
+            type: ["string", "null"],
+            description: "Immutable source microversion ID for insert_assembly_component, or null when a source version is supplied."
+          },
+          partId: {
+            type: ["string", "null"],
+            description: "Exact source part ID for a part insertion; null only for assemblies or whole Part Studios."
+          },
+          configuration: {
+            type: ["string", "null"],
+            maxLength: 20000,
+            description: "Exact Onshape configuration string for insert_assembly_component; null otherwise."
+          },
+          isAssembly: {
+            type: ["boolean", "null"],
+            description: "True when the inserted source element is an assembly; null otherwise."
+          },
+          isWholePartStudio: {
+            type: ["boolean", "null"],
+            description: "True when inserting an entire Part Studio; null otherwise."
+          },
+          instanceId: {
+            type: ["string", "null"],
+            description: "Exact current assembly instance ID for transform, suppress, or delete; null otherwise."
+          },
+          instanceName: {
+            type: ["string", "null"],
+            maxLength: 200,
+            description: "Exact current assembly instance name for transform, suppress, or delete; null otherwise."
+          },
+          occurrencePath: {
+            type: ["array", "null"],
+            maxItems: 20,
+            items: { type: "string" },
+            description: "Exact occurrence path for transform_assembly_instance; null otherwise."
+          },
+          currentTransformHash: {
+            type: ["string", "null"],
+            pattern: "^[a-f0-9]{64}$",
+            description: "Snapshot hash of the current occurrence transform for transform_assembly_instance; null otherwise."
+          },
+          transform: {
+            type: ["array", "null"],
+            minItems: 16,
+            maxItems: 16,
+            items: { type: "number" },
+            description: "Absolute object-to-world 4x4 row-major transform in meters for insert or transform; null otherwise."
+          },
+          currentSuppressed: {
+            type: ["boolean", "null"],
+            description: "Current instance suppression state for set_assembly_instance_suppressed; null otherwise."
+          },
+          suppressed: {
+            type: ["boolean", "null"],
+            description: "Desired instance suppression state for set_assembly_instance_suppressed; null otherwise."
           },
           reason: { type: "string", minLength: 1, maxLength: 500 }
         }
@@ -674,6 +831,51 @@ export function normalizeCadPlanOutput(input: unknown): unknown {
           type: value.type,
           featureId: value.featureId,
           currentName: value.currentName,
+          reason: value.reason
+        };
+      }
+      if (value.type === "insert_assembly_component") {
+        return {
+          type: value.type,
+          componentName: value.componentName,
+          sourceDocumentId: value.sourceDocumentId,
+          sourceElementId: value.sourceElementId,
+          sourceVersionId: value.sourceVersionId,
+          sourceMicroversionId: value.sourceMicroversionId,
+          partId: value.partId,
+          configuration: value.configuration,
+          isAssembly: value.isAssembly,
+          isWholePartStudio: value.isWholePartStudio,
+          transform: value.transform,
+          reason: value.reason
+        };
+      }
+      if (value.type === "transform_assembly_instance") {
+        return {
+          type: value.type,
+          instanceId: value.instanceId,
+          instanceName: value.instanceName,
+          occurrencePath: value.occurrencePath,
+          currentTransformHash: value.currentTransformHash,
+          transform: value.transform,
+          reason: value.reason
+        };
+      }
+      if (value.type === "set_assembly_instance_suppressed") {
+        return {
+          type: value.type,
+          instanceId: value.instanceId,
+          instanceName: value.instanceName,
+          currentSuppressed: value.currentSuppressed,
+          suppressed: value.suppressed,
+          reason: value.reason
+        };
+      }
+      if (value.type === "delete_assembly_instance") {
+        return {
+          type: value.type,
+          instanceId: value.instanceId,
+          instanceName: value.instanceName,
           reason: value.reason
         };
       }
@@ -856,6 +1058,12 @@ export function validatePlanAgainstFeatureTree(
   const names = new Set(features.flatMap((feature) => feature.name ? [feature.name.toLocaleLowerCase()] : []));
 
   for (const operation of plan.operations) {
+    if (operation.type === "insert_assembly_component" ||
+      operation.type === "transform_assembly_instance" ||
+      operation.type === "set_assembly_instance_suppressed" ||
+      operation.type === "delete_assembly_instance") {
+      throw new Error(`${operation.type} can only run in an Assembly.`);
+    }
     if (operation.type === "create_rectangle_sketch" ||
       operation.type === "create_circle_sketch" ||
       operation.type === "extrude_sketch" ||
@@ -922,5 +1130,110 @@ export function validatePlanAgainstFeatureTree(
     }
   }
 
+  return plan;
+}
+
+export interface AssemblyValidationInstance {
+  id: string;
+  name: string;
+  suppressed: boolean;
+}
+
+export interface AssemblyValidationOccurrence {
+  path: string[];
+  transform: number[];
+}
+
+export interface TrustedAssemblyComponentSource {
+  documentId: string;
+  elementId: string;
+  versionId?: string;
+  microversionId?: string;
+  partId?: string;
+  configuration?: string;
+  isAssembly?: boolean;
+  isWholePartStudio?: boolean;
+}
+
+export interface AssemblyValidationSnapshot {
+  instances: AssemblyValidationInstance[];
+  occurrences: AssemblyValidationOccurrence[];
+  trustedSources: TrustedAssemblyComponentSource[];
+}
+
+export function assemblyTransformFingerprint(transform: number[]): string {
+  return createHash("sha256").update(JSON.stringify(transform)).digest("hex");
+}
+
+function assertAssemblyTransform(transform: number[]): void {
+  if (transform.length !== 16 || !transform.every(Number.isFinite)) {
+    throw new Error("Assembly transforms must contain exactly 16 finite numbers.");
+  }
+  const tolerance = 1e-8;
+  if (Math.abs(transform[12] ?? 1) > tolerance ||
+    Math.abs(transform[13] ?? 1) > tolerance ||
+    Math.abs(transform[14] ?? 1) > tolerance ||
+    Math.abs((transform[15] ?? 0) - 1) > tolerance) {
+    throw new Error("Assembly transforms must be affine 4x4 matrices with a [0, 0, 0, 1] final row.");
+  }
+}
+
+function sourceMatches(
+  operation: Extract<CadOperation, { type: "insert_assembly_component" }>,
+  source: TrustedAssemblyComponentSource
+): boolean {
+  return operation.sourceDocumentId === source.documentId &&
+    operation.sourceElementId === source.elementId &&
+    operation.partId === (source.partId ?? null) &&
+    operation.configuration === (source.configuration ?? "") &&
+    operation.isAssembly === (source.isAssembly ?? false) &&
+    operation.isWholePartStudio === (source.isWholePartStudio ?? false) &&
+    (operation.sourceVersionId === (source.versionId ?? null) ||
+      operation.sourceMicroversionId === (source.microversionId ?? null));
+}
+
+export function validatePlanAgainstAssembly(plan: CadPlan, snapshot: AssemblyValidationSnapshot): CadPlan {
+  const instances = new Map(snapshot.instances.map((instance) => [instance.id, instance]));
+  const occurrences = new Map(snapshot.occurrences.map((occurrence) => [occurrence.path.join("/"), occurrence]));
+
+  for (const operation of plan.operations) {
+    if (operation.type === "insert_assembly_component") {
+      assertAssemblyTransform(operation.transform);
+      if (!snapshot.trustedSources.some((source) => sourceMatches(operation, source))) {
+        throw new Error(`Component source for ${operation.componentName} is not present in the inspected assembly or trusted FRCDesignLib results.`);
+      }
+      continue;
+    }
+    if (operation.type === "transform_assembly_instance") {
+      assertAssemblyTransform(operation.transform);
+      const instance = instances.get(operation.instanceId);
+      if (!instance || instance.name !== operation.instanceName) {
+        throw new Error(`Assembly instance ${operation.instanceId} changed after the plan was created.`);
+      }
+      const occurrence = occurrences.get(operation.occurrencePath.join("/"));
+      if (!occurrence || operation.occurrencePath[0] !== operation.instanceId) {
+        throw new Error(`Occurrence ${operation.occurrencePath.join("/")} is no longer available.`);
+      }
+      if (assemblyTransformFingerprint(occurrence.transform) !== operation.currentTransformHash) {
+        throw new Error(`Occurrence ${operation.occurrencePath.join("/")} moved after the plan was created.`);
+      }
+      continue;
+    }
+    if (operation.type === "set_assembly_instance_suppressed") {
+      const instance = instances.get(operation.instanceId);
+      if (!instance || instance.name !== operation.instanceName || instance.suppressed !== operation.currentSuppressed) {
+        throw new Error(`Assembly instance ${operation.instanceId} changed after the plan was created.`);
+      }
+      continue;
+    }
+    if (operation.type === "delete_assembly_instance") {
+      const instance = instances.get(operation.instanceId);
+      if (!instance || instance.name !== operation.instanceName) {
+        throw new Error(`Assembly instance ${operation.instanceId} changed after the plan was created.`);
+      }
+      continue;
+    }
+    throw new Error(`${operation.type} can only run in a Part Studio.`);
+  }
   return plan;
 }

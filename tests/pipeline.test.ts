@@ -532,6 +532,68 @@ describe("installed Onshape extension pipeline", () => {
       .every((feature) => feature.parameters.find((parameter) => parameter.parameterId === "startOffset")?.value === true
         && feature.parameters.find((parameter) => parameter.parameterId === "startOffsetDistance")?.expression === "22 mm"))
       .toBe(true);
+
+    const assemblyContext = {
+      documentId: "document",
+      workspaceOrVersion: "w",
+      workspaceId: "workspace",
+      elementId: "assembly",
+      server: onshapeOrigin
+    };
+    const assemblyContextQuery = new URLSearchParams(assemblyContext);
+    const detectedAssembly = await fetch(`${appOrigin}/api/context?${assemblyContextQuery}`, {
+      headers: sessionHeaders()
+    });
+    expect(detectedAssembly.status).toBe(200);
+    expect(await detectedAssembly.json()).toMatchObject({ name: "Assembly 1", elementType: "ASSEMBLY" });
+
+    const inventoryResponse = await fetch(`${appOrigin}/api/plans`, {
+      method: "POST",
+      headers: sessionHeaders({ origin: appOrigin, "content-type": "application/json" }),
+      body: JSON.stringify({ prompt: "What is in this assembly? Run the assembly inventory.", context: assemblyContext })
+    });
+    expect(inventoryResponse.status).toBe(201);
+    expect(await inventoryResponse.json()).toMatchObject({
+      status: "applied",
+      operations: [],
+      agentTrace: { elementType: "ASSEMBLY", instanceCount: 1 }
+    });
+
+    const wheelPlanResponse = await fetch(`${appOrigin}/api/plans`, {
+      method: "POST",
+      headers: sessionHeaders({ origin: appOrigin, "content-type": "application/json" }),
+      body: JSON.stringify({ prompt: "Import one wheel from FRCDesignLib. This is the insert assembly wheel fixture.", context: assemblyContext })
+    });
+    expect(wheelPlanResponse.status).toBe(201);
+    const wheelPlan = await wheelPlanResponse.json() as {
+      id: string;
+      status: string;
+      operations: Array<{ type: string; sourceDocumentId?: string; sourceVersionId?: string; partId?: string }>;
+    };
+    expect(wheelPlan).toMatchObject({
+      status: "pending",
+      operations: [{
+        type: "insert_assembly_component",
+        sourceDocumentId: "wheels",
+        sourceVersionId: "wheel-version-1",
+        partId: "WHEEL"
+      }]
+    });
+    const wheelApply = await fetch(`${appOrigin}/api/plans/${wheelPlan.id}/apply`, {
+      method: "POST",
+      headers: sessionHeaders({ origin: appOrigin })
+    });
+    expect(wheelApply.status).toBe(200);
+    expect(await wheelApply.json()).toMatchObject({
+      status: "applied",
+      result: { operations: [{ status: "applied", verification: "passed" }], regenerationErrors: [] }
+    });
+    const assemblyState = await fetch(`${onshapeOrigin}/__state`).then((response) => response.json()) as {
+      assembly: { instances: Array<{ id: string; partId: string }>; occurrences: Array<{ path: string[]; transform: number[] }> };
+    };
+    const insertedWheel = assemblyState.assembly.instances.find((instance) => instance.partId === "WHEEL");
+    expect(insertedWheel).toBeTruthy();
+    expect(assemblyState.assembly.occurrences.find((occurrence) => occurrence.path[0] === insertedWheel?.id)?.transform[3]).toBe(0.05);
   }, 20_000);
 
   it("rejects version contexts and unexpected Onshape stacks", async () => {

@@ -202,12 +202,14 @@ This produces an agentic recovery loop without erasing the approval boundary.
 
 ## Scope
 
-MorAssistant's broad native fallback is intentionally scoped to the active **workspace Part Studio**. That surface includes sketches, variables, extrudes, revolves, sweeps, lofts, holes, fillets, chamfers, shells, booleans, patterns, transforms, splits, mate connectors, and other valid native Part Studio feature payloads.
+MorAssistant's broad native-feature fallback is intentionally scoped to an active **workspace Part Studio**. That surface includes sketches, variables, extrudes, revolves, sweeps, lofts, holes, fillets, chamfers, shells, booleans, patterns, transforms, splits, mate connectors, and other valid native Part Studio feature payloads.
 
-“Anything in Onshape” is not one API context. Assemblies have instances and mates; drawings have views and annotations; release management has workflow state; versions are immutable. Supporting those surfaces safely means adding context-specific inspectors, operation schemas, approval language, concurrency rules, and verification—not sending Part Studio payloads to unrelated endpoints.
+An active **workspace Assembly** uses a separate inspector and operation vocabulary. The trusted host reads instances, immutable source versions/microversions, configurations, mates, occurrence paths, suppression state, and absolute object-to-world transforms. It can search the FRCDesignApp catalog, resolve exact Onshape part IDs, then approval-gate insertion, placement, suppression, unsuppression, and deletion. A failed insert/place pair compensates by deleting the newly inserted instance.
+
+“Anything in Onshape” is not one API context. Part Studios have features; Assemblies have instances and mates; drawings have views and annotations; release management has workflow state; versions are immutable. MorAssistant now handles the first two with context-specific inspectors, operation schemas, approval language, concurrency rules, and verification. It does not send Part Studio payloads to Assembly endpoints or invent implicit mate geometry.
 
 ## Verification
 
-`npm run check` type-checks and builds every workspace, then runs unit and full-pipeline tests. The deterministic pipeline covers OAuth, Codex sign-in, dependency/geometry inspection, invalid-plan self-repair, approval, native mutation, microversion guards, per-operation rebuild verification, encrypted snapshot persistence, a forced `429` planning-and-apply fallback, fail-fast behavior, and separately approved recovery.
+`npm run check` type-checks and builds every workspace, then runs unit and full-pipeline tests. The deterministic pipeline covers OAuth, Codex sign-in, Part Studio dependency/geometry inspection, Assembly detection and inspection, FRCDesignLib source resolution, versioned component insertion and absolute placement, invalid-plan self-repair, approval, native mutation, microversion guards, per-operation verification, encrypted snapshot persistence, a forced `429` planning-and-apply fallback, fail-fast behavior, and separately approved recovery.
 
 The mock services never contact a real Onshape document or OpenAI account. A production release still requires the live Onshape App Store matrix in [app-store-release-checklist.md](app-store-release-checklist.md).

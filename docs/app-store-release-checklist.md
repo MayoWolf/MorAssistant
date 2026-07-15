@@ -118,7 +118,7 @@ The private installation token binds the iframe to the owner session without thi
 Use a disposable document owned by the beta team, never a production design.
 
 1. In **My account → Applications**, grant Onshape access to MorAssistant.
-2. Refresh Onshape and open a workspace Part Studio.
+2. Refresh Onshape and open both a workspace Part Studio and a workspace Assembly; the MorAssistant sidebar icon must appear in both.
 3. Launch MorAssistant from the right panel.
 4. Select **Continue with ChatGPT**, open the verification page, enter the one-time code, and return to Onshape.
 5. Ask `Rename Extrude 1 to Base Extrusion`. Verify that the preview names the exact existing feature ID/name and does not change CAD yet.
@@ -127,12 +127,14 @@ Use a disposable document owned by the beta team, never a production design.
 8. Create a plan, manually modify the target feature in Onshape, and then approve the old plan. It must reject the stale preview without applying it.
 9. Double-click approval or issue simultaneous approvals. Only one apply may succeed.
 10. Revoke MorAssistant under **My account → Applications**, let the token expire or trigger an API call, and verify the panel reports that Onshape access is missing.
+11. In the Assembly, ask for an inventory answer and verify no approval control appears. Then preview one FRCDesignLib wheel insertion and verify the exact versioned source, part, and absolute placement before approving in a disposable assembly.
 
 Run the wider release matrix:
 
 - empty Part Studio; sketches, surfaces, and wire-only studios; suppressed/failed features;
 - feature trees with more than 20 and more than 100 features;
 - standard and configured Part Studios (configured studios currently allow renames but reject dimension edits with an explicit message);
+- empty and populated Assemblies; nested subassemblies; suppressed, fixed, and mated instances; FRCDesignLib part and subassembly sources;
 - workspace versus version (versions must be read-only/rejected here);
 - rename and dimension changes that create regeneration errors;
 - expired/revoked Onshape grants and failed/cancelled Codex sign-in;

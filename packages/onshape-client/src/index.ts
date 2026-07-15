@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
-import { parseFeatureJson, type CadOperation, type RegenerationError } from "@morassistant/cad-command-schema";
-import type { PartStudioContext } from "@morassistant/shared-types";
+import {
+  assemblyTransformFingerprint,
+  parseFeatureJson,
+  type CadOperation,
+  type RegenerationError,
+  type TrustedAssemblyComponentSource
+} from "@morassistant/cad-command-schema";
+import type { OnshapeElementContext, OnshapeElementType, PartStudioContext } from "@morassistant/shared-types";
 import { buildRectangleSketchFeature } from "./rectangle-sketch.js";
 import { buildChamferFeature, buildCircleSketchFeature, buildExtrudeFeature, buildFilletFeature } from "./native-features.js";
 
@@ -119,6 +125,90 @@ export interface PartStudioInspection {
   massProperties?: unknown;
   topologyEvaluation?: unknown;
   warnings: string[];
+}
+
+export interface OnshapeElementInfo {
+  id: string;
+  name: string;
+  elementType: string;
+}
+
+export interface AssemblyInstanceSummary {
+  id: string;
+  name: string;
+  type: string;
+  suppressed: boolean;
+  documentId?: string;
+  elementId?: string;
+  documentVersion?: string;
+  documentMicroversion?: string;
+  partId?: string;
+  configuration: string;
+  isAssembly: boolean;
+  isWholePartStudio: boolean;
+}
+
+export interface AssemblyOccurrenceSummary {
+  path: string[];
+  transform: number[];
+  transformHash: string;
+  fixed?: boolean;
+}
+
+export interface AssemblyFeatureSummary {
+  id: string;
+  name: string;
+  featureType: string;
+  mateType?: string;
+  suppressed: boolean;
+  occurrencePaths: string[][];
+}
+
+export interface FrcLibraryComponentCandidate extends TrustedAssemblyComponentSource {
+  name: string;
+  catalogElementName: string;
+  catalogDocumentName: string;
+  elementType: OnshapeElementType;
+  vendors: string[];
+  source: "FRCDesignLib";
+}
+
+export interface AssemblyInspection {
+  elementType: "ASSEMBLY";
+  definition: Record<string, unknown>;
+  documentMicroversion?: string;
+  instances: AssemblyInstanceSummary[];
+  occurrences: AssemblyOccurrenceSummary[];
+  features: AssemblyFeatureSummary[];
+  trustedSources: TrustedAssemblyComponentSource[];
+  libraryCandidates: FrcLibraryComponentCandidate[];
+  warnings: string[];
+}
+
+interface FrcCatalogElement {
+  id?: string;
+  documentId?: string;
+  name?: string;
+  microversionId?: string;
+  elementType?: string;
+  vendors?: unknown[];
+  path?: {
+    documentId?: string;
+    instanceId?: string;
+    instanceType?: string;
+    elementId?: string;
+  };
+}
+
+interface FrcCatalogDocument {
+  id?: string;
+  name?: string;
+  path?: { instanceId?: string; instanceType?: string };
+}
+
+interface FrcCatalogResponse {
+  documents?: Record<string, FrcCatalogDocument>;
+  elements?: Record<string, FrcCatalogElement>;
 }
 
 export interface PartStudioGeometryEvidence {
@@ -360,6 +450,126 @@ function canonicalizeFeaturePayload(feature: Record<string, unknown>): Record<st
   return canonical;
 }
 
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function assemblyRoot(definition: Record<string, unknown>): Record<string, unknown> {
+  return recordValue(definition.rootAssembly) ?? definition;
+}
+
+function normalizeAssemblyInstances(definition: Record<string, unknown>): AssemblyInstanceSummary[] {
+  const root = assemblyRoot(definition);
+  const raw = Array.isArray(root.instances) ? root.instances : [];
+  return raw.flatMap((item) => {
+    const instance = recordValue(item);
+    const id = stringValue(instance?.id);
+    if (!instance || !id) return [];
+    const type = stringValue(instance.type) ?? "Unknown";
+    return [{
+      id,
+      name: stringValue(instance.name) ?? id,
+      type,
+      suppressed: instance.suppressed === true,
+      ...(stringValue(instance.documentId) ? { documentId: String(instance.documentId) } : {}),
+      ...(stringValue(instance.elementId) ? { elementId: String(instance.elementId) } : {}),
+      ...(stringValue(instance.documentVersion) ? { documentVersion: String(instance.documentVersion) } : {}),
+      ...(stringValue(instance.documentMicroversion) ? { documentMicroversion: String(instance.documentMicroversion) } : {}),
+      ...(stringValue(instance.partId) ? { partId: String(instance.partId) } : {}),
+      configuration: stringValue(instance.fullConfiguration) ?? stringValue(instance.configuration) ?? "",
+      isAssembly: type.toLocaleLowerCase() === "assembly",
+      isWholePartStudio: type.toLocaleLowerCase().includes("partstudio")
+    }];
+  });
+}
+
+function normalizeAssemblyOccurrences(definition: Record<string, unknown>): AssemblyOccurrenceSummary[] {
+  const root = assemblyRoot(definition);
+  const raw = Array.isArray(root.occurrences) ? root.occurrences : [];
+  return raw.flatMap((item) => {
+    const occurrence = recordValue(item);
+    const path = Array.isArray(occurrence?.path) && occurrence.path.every((id) => typeof id === "string" && id.length > 0)
+      ? occurrence.path as string[]
+      : [];
+    const transform = Array.isArray(occurrence?.transform) && occurrence.transform.length === 16 && occurrence.transform.every((number) => typeof number === "number" && Number.isFinite(number))
+      ? occurrence.transform as number[]
+      : [];
+    if (path.length === 0 || transform.length !== 16) return [];
+    return [{
+      path,
+      transform,
+      transformHash: assemblyTransformFingerprint(transform),
+      ...(typeof occurrence?.fixed === "boolean" ? { fixed: occurrence.fixed } : {})
+    }];
+  });
+}
+
+function normalizeAssemblyFeatures(definition: Record<string, unknown>): AssemblyFeatureSummary[] {
+  const root = assemblyRoot(definition);
+  const raw = Array.isArray(root.features) ? root.features : [];
+  return raw.flatMap((item) => {
+    const feature = recordValue(item);
+    if (!feature) return [];
+    const data = recordValue(feature.featureData) ?? feature;
+    const id = stringValue(feature.id) ?? stringValue(feature.featureId);
+    if (!id) return [];
+    const matedEntities = Array.isArray(data.matedEntities) ? data.matedEntities : [];
+    const occurrencePaths = matedEntities.flatMap((entity) => {
+      const path = recordValue(entity)?.matedOccurrence;
+      return Array.isArray(path) && path.every((entry) => typeof entry === "string") ? [path as string[]] : [];
+    });
+    return [{
+      id,
+      name: stringValue(data.name) ?? id,
+      featureType: stringValue(feature.featureType) ?? stringValue(data.featureType) ?? "unknown",
+      ...(stringValue(data.mateType) ? { mateType: String(data.mateType) } : {}),
+      suppressed: feature.suppressed === true || data.suppressed === true,
+      occurrencePaths
+    }];
+  });
+}
+
+function trustedSourcesFromInstances(instances: AssemblyInstanceSummary[]): TrustedAssemblyComponentSource[] {
+  const seen = new Set<string>();
+  return instances.flatMap((instance) => {
+    if (!instance.documentId || !instance.elementId || (!instance.documentVersion && !instance.documentMicroversion)) return [];
+    const source: TrustedAssemblyComponentSource = {
+      documentId: instance.documentId,
+      elementId: instance.elementId,
+      ...(instance.documentVersion ? { versionId: instance.documentVersion } : {}),
+      ...(instance.documentMicroversion ? { microversionId: instance.documentMicroversion } : {}),
+      ...(instance.partId ? { partId: instance.partId } : {}),
+      configuration: instance.configuration,
+      isAssembly: instance.isAssembly,
+      isWholePartStudio: instance.isWholePartStudio
+    };
+    const key = JSON.stringify(source);
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [source];
+  });
+}
+
+function searchTokens(value: string): string[] {
+  const stopWords = new Set(["a", "an", "and", "are", "at", "be", "can", "do", "for", "from", "i", "in", "into", "is", "it", "me", "of", "on", "or", "place", "put", "the", "this", "to", "use", "with"]);
+  return [...new Set(value.toLocaleLowerCase().match(/[a-z0-9]+/gu) ?? [])]
+    .filter((token) => token.length > 1 && !stopWords.has(token));
+}
+
+function relevanceScore(query: string, value: string): number {
+  const normalizedQuery = query.toLocaleLowerCase();
+  const normalizedValue = value.toLocaleLowerCase();
+  let score = normalizedValue.includes(normalizedQuery.trim()) && normalizedQuery.trim().length > 1 ? 20 : 0;
+  for (const token of searchTokens(query)) {
+    if (normalizedValue.includes(token)) score += token.length >= 5 ? 5 : 2;
+  }
+  return score;
+}
+
 export class OnshapeApiError extends Error {
   constructor(
     message: string,
@@ -430,15 +640,18 @@ export interface OnshapeClientOptions {
   refreshAccessToken?: () => Promise<string>;
   baseUrl?: string;
   apiVersion?: string;
+  frcDesignBaseUrl?: string;
 }
 
 export class OnshapeClient {
   private readonly baseUrl: string;
   private readonly apiVersion: string;
+  private readonly frcDesignBaseUrl: string;
 
   constructor(private readonly options: OnshapeClientOptions) {
     this.baseUrl = (options.baseUrl ?? "https://cad.onshape.com").replace(/\/$/, "");
     this.apiVersion = options.apiVersion ?? "v16";
+    this.frcDesignBaseUrl = (options.frcDesignBaseUrl ?? "https://app.frcdesign.org").replace(/\/$/, "");
   }
 
   private async request<T>(path: string, init: RequestInit = {}, retryAuth = true, rateLimitAttempt = 0): Promise<T> {
@@ -498,6 +711,167 @@ export class OnshapeClient {
       );
     }
     return body as T;
+  }
+
+  async listElements(context: OnshapeElementContext): Promise<OnshapeElementInfo[]> {
+    const response = await this.request<unknown>(
+      `/documents/d/${encodeURIComponent(context.documentId)}/w/${encodeURIComponent(context.workspaceId)}/elements`
+    );
+    const items = Array.isArray(response)
+      ? response
+      : Array.isArray(recordValue(response)?.items)
+        ? recordValue(response)?.items as unknown[]
+        : [];
+    return items.flatMap((item) => {
+      const element = recordValue(item);
+      const id = stringValue(element?.id);
+      if (!element || !id) return [];
+      return [{
+        id,
+        name: stringValue(element.name) ?? id,
+        elementType: stringValue(element.elementType) ?? "UNKNOWN"
+      }];
+    });
+  }
+
+  async getElementInfo(context: OnshapeElementContext): Promise<OnshapeElementInfo> {
+    const element = (await this.listElements(context)).find((candidate) => candidate.id === context.elementId);
+    if (!element) throw new Error(`Onshape element ${context.elementId} was not found in the current workspace.`);
+    return element;
+  }
+
+  async getAssemblyDefinition(context: OnshapeElementContext): Promise<Record<string, unknown>> {
+    const query = new URLSearchParams({
+      includeMateFeatures: "true",
+      includeNonSolids: "true",
+      includeMateConnectors: "true",
+      excludeSuppressed: "false"
+    });
+    if (context.configuration) query.set("configuration", context.configuration);
+    return this.request<Record<string, unknown>>(
+      `/assemblies/d/${encodeURIComponent(context.documentId)}/w/${encodeURIComponent(context.workspaceId)}/e/${encodeURIComponent(context.elementId)}?${query}`
+    );
+  }
+
+  async inspectAssembly(
+    context: OnshapeElementContext,
+    existingDefinition?: Record<string, unknown>,
+    libraryCandidates: FrcLibraryComponentCandidate[] = []
+  ): Promise<AssemblyInspection> {
+    const definition = existingDefinition ?? await this.getAssemblyDefinition(context);
+    const root = assemblyRoot(definition);
+    const instances = normalizeAssemblyInstances(definition);
+    const occurrences = normalizeAssemblyOccurrences(definition);
+    const features = normalizeAssemblyFeatures(definition);
+    const warnings: string[] = [];
+    if (instances.length > 0 && occurrences.length === 0) {
+      warnings.push("Onshape returned assembly instances without occurrence transforms, so placement planning is unavailable until transforms can be read.");
+    }
+    const sources = [...trustedSourcesFromInstances(instances), ...libraryCandidates];
+    const sourceKeys = new Set<string>();
+    const trustedSources = sources.filter((source) => {
+      const key = JSON.stringify({
+        documentId: source.documentId,
+        elementId: source.elementId,
+        versionId: source.versionId,
+        microversionId: source.microversionId,
+        partId: source.partId,
+        configuration: source.configuration ?? "",
+        isAssembly: source.isAssembly ?? false,
+        isWholePartStudio: source.isWholePartStudio ?? false
+      });
+      if (sourceKeys.has(key)) return false;
+      sourceKeys.add(key);
+      return true;
+    });
+    return {
+      elementType: "ASSEMBLY",
+      definition,
+      ...(stringValue(root.documentMicroversion) ? { documentMicroversion: String(root.documentMicroversion) } : {}),
+      instances,
+      occurrences,
+      features,
+      trustedSources,
+      libraryCandidates,
+      warnings
+    };
+  }
+
+  private async getVersionedParts(documentId: string, versionId: string, elementId: string): Promise<Array<Record<string, unknown>>> {
+    const query = new URLSearchParams({ withThumbnails: "false", includePropertyDefaults: "false" });
+    const response = await this.request<unknown>(
+      `/parts/d/${encodeURIComponent(documentId)}/v/${encodeURIComponent(versionId)}/e/${encodeURIComponent(elementId)}?${query}`
+    );
+    return Array.isArray(response) ? response.flatMap((part) => recordValue(part) ? [recordValue(part)!] : []) : [];
+  }
+
+  async searchFrcDesignLibrary(prompt: string, limit = 12): Promise<FrcLibraryComponentCandidate[]> {
+    const response = await fetch(
+      `${this.frcDesignBaseUrl}/api/library/frc-design-lib?currentAccessLevel=user&cacheVersion=68`,
+      { headers: { accept: "application/json" } }
+    );
+    if (!response.ok) throw new Error(`FRCDesignLib catalog request failed (${response.status}).`);
+    const catalog = await response.json() as FrcCatalogResponse;
+    const documents = catalog.documents ?? {};
+    const matches = Object.values(catalog.elements ?? {}).flatMap((element) => {
+      const id = stringValue(element.id) ?? stringValue(element.path?.elementId);
+      const documentId = stringValue(element.documentId) ?? stringValue(element.path?.documentId);
+      const document = documentId ? documents[documentId] : undefined;
+      const versionId = stringValue(document?.path?.instanceId);
+      const name = stringValue(element.name);
+      const elementType: OnshapeElementType | undefined = element.elementType === "ASSEMBLY"
+        ? "ASSEMBLY"
+        : element.elementType === "PARTSTUDIO"
+          ? "PARTSTUDIO"
+          : undefined;
+      if (!id || !documentId || !versionId || !name || !elementType) return [];
+      const documentName = stringValue(document?.name) ?? documentId;
+      const vendors = (element.vendors ?? []).flatMap((vendor) => typeof vendor === "string" ? [vendor] : []);
+      const score = relevanceScore(prompt, `${documentName} ${name} ${vendors.join(" ")}`);
+      if (score <= 0) return [];
+      return [{ element, id, documentId, versionId, name, documentName, vendors, elementType, score }];
+    }).sort((left, right) => right.score - left.score).slice(0, 8);
+
+    const enriched = await Promise.all(matches.map(async (match): Promise<FrcLibraryComponentCandidate[]> => {
+      const base = {
+        documentId: match.documentId,
+        elementId: match.id,
+        versionId: match.versionId,
+        ...(stringValue(match.element.microversionId) ? { microversionId: String(match.element.microversionId) } : {}),
+        catalogElementName: match.name,
+        catalogDocumentName: match.documentName,
+        elementType: match.elementType,
+        vendors: match.vendors,
+        source: "FRCDesignLib" as const
+      };
+      if (match.elementType === "ASSEMBLY") {
+        return [{ ...base, name: match.name, configuration: "", isAssembly: true, isWholePartStudio: false }];
+      }
+      try {
+        const parts = await this.getVersionedParts(match.documentId, match.versionId, match.id);
+        return parts.flatMap((part) => {
+          const partId = stringValue(part.partId);
+          const name = stringValue(part.name);
+          if (!partId || !name) return [];
+          return [{
+            ...base,
+            name,
+            partId,
+            ...(stringValue(part.microversionId) ? { microversionId: String(part.microversionId) } : {}),
+            configuration: stringValue(part.fullConfiguration) ?? stringValue(part.configuration) ?? "",
+            isAssembly: false,
+            isWholePartStudio: false,
+            partScore: relevanceScore(prompt, `${match.name} ${name}`)
+          }];
+        }).sort((left, right) => right.partScore - left.partScore).slice(0, 5).map(({ partScore: _partScore, ...candidate }) => candidate);
+      } catch {
+        return [];
+      }
+    }));
+    return enriched.flat().sort((left, right) =>
+      relevanceScore(prompt, `${right.catalogDocumentName} ${right.catalogElementName} ${right.name}`) -
+      relevanceScore(prompt, `${left.catalogDocumentName} ${left.catalogElementName} ${left.name}`)
+    ).slice(0, Math.max(1, Math.min(limit, 25)));
   }
 
   async listFeatures(context: PartStudioContext): Promise<FeatureListResponse> {
@@ -677,11 +1051,118 @@ export class OnshapeClient {
     );
   }
 
+  async modifyAssembly(context: OnshapeElementContext, body: Record<string, unknown>): Promise<unknown> {
+    return this.request(
+      `/assemblies/d/${encodeURIComponent(context.documentId)}/w/${encodeURIComponent(context.workspaceId)}/e/${encodeURIComponent(context.elementId)}/modify`,
+      { method: "POST", body: JSON.stringify(body) }
+    );
+  }
+
+  async createAssemblyInstance(
+    context: OnshapeElementContext,
+    operation: Extract<CadOperation, { type: "insert_assembly_component" }>
+  ): Promise<unknown> {
+    return this.request(
+      `/assemblies/d/${encodeURIComponent(context.documentId)}/w/${encodeURIComponent(context.workspaceId)}/e/${encodeURIComponent(context.elementId)}/instances`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          documentId: operation.sourceDocumentId,
+          elementId: operation.sourceElementId,
+          ...(operation.sourceVersionId ? { versionId: operation.sourceVersionId } : {}),
+          ...(!operation.sourceVersionId && operation.sourceMicroversionId ? { microversionId: operation.sourceMicroversionId } : {}),
+          ...(operation.partId ? { partId: operation.partId } : {}),
+          ...(operation.configuration ? { configuration: operation.configuration } : {}),
+          includePartTypes: ["PARTS"],
+          isAssembly: operation.isAssembly,
+          isWholePartStudio: operation.isWholePartStudio,
+          isHidden: false,
+          isSuppressed: false
+        })
+      }
+    );
+  }
+
+  async applyAssemblyOperationDetailed(
+    context: OnshapeElementContext,
+    operation: CadOperation,
+    existingInspection?: AssemblyInspection
+  ): Promise<AppliedOperation> {
+    if (operation.type === "insert_assembly_component") {
+      const before = existingInspection ?? await this.inspectAssembly(context);
+      const beforeIds = new Set(before.instances.map((instance) => instance.id));
+      const insertResponse = await this.createAssemblyInstance(context, operation);
+      const afterInsert = await this.inspectAssembly(context);
+      const inserted = afterInsert.instances.filter((instance) => !beforeIds.has(instance.id));
+      if (inserted.length === 0) {
+        throw new Error(`Onshape did not report a new instance after inserting ${operation.componentName}.`);
+      }
+      try {
+        const transformResponse = await this.modifyAssembly(context, {
+          editDescription: `MorAssistant placed ${operation.componentName}`,
+          transformDefinitions: inserted.map((instance) => ({
+            isRelative: false,
+            occurrences: [{ path: [instance.id] }],
+            transform: operation.transform
+          }))
+        });
+        return {
+          message: `Inserted and placed ${operation.componentName} as ${inserted.map((instance) => instance.name).join(", ")}.`,
+          response: { insert: insertResponse, transform: transformResponse, instanceIds: inserted.map((instance) => instance.id) }
+        };
+      } catch (error) {
+        await this.modifyAssembly(context, {
+          editDescription: `MorAssistant rolled back an incomplete ${operation.componentName} insertion`,
+          deleteInstances: inserted.map((instance) => instance.id)
+        }).catch(() => undefined);
+        throw error;
+      }
+    }
+
+    if (operation.type === "transform_assembly_instance") {
+      const response = await this.modifyAssembly(context, {
+        editDescription: `MorAssistant placed ${operation.instanceName}`,
+        transformDefinitions: [{
+          isRelative: false,
+          occurrences: [{ path: operation.occurrencePath }],
+          transform: operation.transform
+        }]
+      });
+      return { message: `Placed ${operation.instanceName}.`, response };
+    }
+
+    if (operation.type === "set_assembly_instance_suppressed") {
+      const response = await this.modifyAssembly(context, {
+        editDescription: `MorAssistant ${operation.suppressed ? "suppressed" : "unsuppressed"} ${operation.instanceName}`,
+        ...(operation.suppressed
+          ? { suppressInstances: [operation.instanceId] }
+          : { unsuppressInstances: [operation.instanceId] })
+      });
+      return { message: `${operation.suppressed ? "Suppressed" : "Unsuppressed"} ${operation.instanceName}.`, response };
+    }
+
+    if (operation.type === "delete_assembly_instance") {
+      const response = await this.modifyAssembly(context, {
+        editDescription: `MorAssistant deleted ${operation.instanceName}`,
+        deleteInstances: [operation.instanceId]
+      });
+      return { message: `Deleted ${operation.instanceName}.`, response };
+    }
+
+    throw new Error(`${operation.type} can only run in a Part Studio.`);
+  }
+
   async applyOperationDetailed(
     context: PartStudioContext,
     operation: CadOperation,
     featureTree?: FeatureListResponse
   ): Promise<AppliedOperation> {
+    if (operation.type === "insert_assembly_component" ||
+      operation.type === "transform_assembly_instance" ||
+      operation.type === "set_assembly_instance_suppressed" ||
+      operation.type === "delete_assembly_instance") {
+      throw new Error(`${operation.type} can only run in an Assembly.`);
+    }
     const tree = featureTree ?? await this.listFeatures(context);
     if (operation.type === "create_rectangle_sketch") {
       if (tree.features.some((feature) => feature.name?.toLocaleLowerCase() === operation.sketchName.toLocaleLowerCase())) {

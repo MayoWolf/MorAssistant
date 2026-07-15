@@ -33,7 +33,7 @@
 
 ## AI CAD, without the leap of faith
 
-MorAssistant is a free, open-source **Onshape right-panel copilot** powered by Codex. It lives beside the feature tree—like other native Onshape integrations—and now behaves as a persistent Part Studio chat rather than a one-shot prompt box:
+MorAssistant is a free, open-source **Onshape right-panel copilot** powered by Codex. It lives beside the feature tree—like other native Onshape integrations—and behaves as a persistent chat in both Part Studios and Assemblies rather than a one-shot prompt box:
 
 1. describe the change in plain language;
 2. receive a small, structured plan tied to the current feature IDs and values;
@@ -49,7 +49,7 @@ The personal deployment pins **GPT‑5.6 Sol at high reasoning effort**, verifie
 
 ### What “Adam-like” means here
 
-Each Part Studio has its own durable Codex conversation. The visible transcript survives panel reloads, the underlying app-server thread survives backend restarts, and follow-up turns retain names, dimensions, corrections, and design intent. Before every new reply, MorAssistant still re-reads the live feature tree so conversation memory never overrides the actual CAD state. If a saved Codex rollout cannot be reopened, the backend seeds a replacement thread from the recent encrypted transcript.
+Each Part Studio and Assembly has its own durable Codex conversation. The visible transcript survives panel reloads, the underlying app-server thread survives backend restarts, and follow-up turns retain names, dimensions, component references, corrections, and design intent. Before every new reply, MorAssistant still re-reads the live feature tree or assembly definition so conversation memory never overrides actual CAD state. If a saved Codex rollout cannot be reopened, the backend seeds a replacement thread from the recent encrypted transcript.
 
 The agent operates on the model’s real feature history, not on a screenshot and not by hallucinating CAD JSON. Sol chooses from a typed CAD vocabulary; deterministic builders compile common intent into native Onshape features; the trusted host checks dependencies and regeneration after every operation. The raw-feature route remains an escape hatch for less common Part Studio features, not the default for basic geometry. Informational follow-ups can return a normal chat answer with no CAD operations and no approval button.
 
@@ -57,7 +57,7 @@ The agent operates on the model’s real feature history, not on a screenshot an
 
 | Native workflow | Approval is a boundary | Stale-plan protection | Isolated credentials |
 |:--|:--|:--|:--|
-| Opens from the Part Studio element sidebar. | Planning cannot mutate CAD. Apply is a separate request. | A preview is rejected if its feature name, parameter expression, payload hash, or microversion is no longer current. | Onshape tokens stay in encrypted storage; each Codex user gets a separate `CODEX_HOME`. |
+| Opens from the Part Studio or Assembly element sidebar. | Planning cannot mutate CAD. Apply is a separate request. | A preview is rejected when its feature, instance, occurrence transform, source tuple, or microversion is no longer current. | Onshape tokens stay in encrypted storage; each Codex user gets a separate `CODEX_HOME`. |
 
 ## From a sentence to a native parametric model
 
@@ -72,9 +72,9 @@ flowchart TD
   V -->|"No · return exact feedback"| P
   V -->|"Yes"| A["5 · Show every operation for approval"]
   A -->|"Approved"| E["6 · Apply one operation"]
-  E --> C{"Onshape rebuild is clean?"}
+  E --> C{"Onshape verification passes?"}
   C -->|"Yes · more work"| E
-  C -->|"Yes · complete"| D["Native Part Studio updated"]
+  C -->|"Yes · complete"| D["Native Onshape model updated"]
   C -->|"No"| S["Stop immediately + prepare recovery plan"]
   S --> A
 ```
@@ -89,11 +89,13 @@ The model context is deliberately CAD-shaped:
 | Geometry | Solid/body, face, edge, and vertex counts plus bounded body details | Gives the planner topology evidence instead of only feature names |
 | Physical properties | Part count, volume, mass, and centroid when Onshape can calculate them | Helps check scale and geometric plausibility |
 | Rebuild state | Per-feature Onshape status before and after each edit | Separates pre-existing problems from failures introduced by the plan |
+| Assembly definition | Exact instance IDs, source documents/versions/configurations, mates, occurrence paths, and absolute 4×4 transforms | Enables guarded component insertion and placement without inventing library records or instance paths |
+| FRCDesignLib bridge | Prompt-matched FRCDesignApp catalog entries enriched with authenticated Onshape part IDs | Lets the agent import the same versioned FRC components exposed by the installed library app |
 | Tool curriculum | 177 built-in sketch, solid, surface, curve, sheet-metal, frame, assembly, inspection, and metadata lessons | Teaches prerequisites, method, and verification—not just toolbar names |
 | Live feature specs | Exact feature types and parameter definitions returned by the active Part Studio | Adapts to the current Onshape release and installed custom FeatureScript tools |
 | Live web research | Current primary sources for season rules, standards, products, and physical dimensions | Grounds requests such as the 2026 FRC season or regulation sports equipment in verifiable facts |
 | Live activity | Detailed reasoning summaries, web-search activity, inspection, and validation state | Replaces an opaque loading animation without exposing private chain-of-thought |
-| Conversation context | Persistent Codex thread plus the visible prompt/plan transcript for this Part Studio | Makes “it,” “those,” “the last sketch,” and other follow-ups refer to earlier turns |
+| Conversation context | Persistent Codex thread plus the visible prompt/plan transcript for the active element | Makes “it,” “those wheels,” “the last sketch,” and other follow-ups refer to earlier turns |
 
 Read-only geometric analysis uses Onshape's FeatureScript evaluation API. Persistent changes use Onshape's native Feature API, so the result remains editable, ordered, parametric CAD. Invalid model output is not merely rejected: the validation failure is fed back into the same planning thread for up to three bounded repair passes.
 
@@ -102,7 +104,7 @@ Read-only geometric analysis uses Onshape's FeatureScript evaluation API. Persis
 For a private installation:
 
 1. Open the MorAssistant listing in the Onshape App Store and select **Subscribe**.
-2. Refresh Onshape and open a **workspace Part Studio**.
+2. Refresh Onshape and open a **workspace Part Studio or Assembly**.
 3. Select the MorAssistant cube icon in the element right sidebar.
 4. If requested, grant **Onshape access** under **My account → Applications**.
 5. Select **Continue with ChatGPT** once to connect Codex—no OpenAI API key is requested.
@@ -121,6 +123,10 @@ Research the regulation size of an American football, state any modeling assumpt
 Rename Sketch 1 to Base Profile
 Rename Extrude 1 to Base Extrusion
 Change Base Extrusion depth from 4 mm to 6 mm
+In this assembly, list the existing hex shafts, wheels, and mates
+Find the matching compliant wheel in FRCDesignLib and import two of them
+Place the imported wheels on the existing 1/2-inch hex shaft
+Suppress the selected bearing, but do not delete it
 ```
 
 The complete Developer Portal configuration and private-install test are in [docs/onshape-installation.md](docs/onshape-installation.md).
@@ -135,7 +141,7 @@ MorAssistant now uses two complementary knowledge layers. The versioned **177-to
 | Evaluate FeatureScript for geometry analysis | ✅ | Read-only lambda evaluation; no persistent mutation |
 | Research current real-world facts | ✅ | First-party live web search, primary-source preference, source links in every researched preview |
 | Show planning progress live | ✅ | Detailed reasoning summaries plus inspection, research, and trusted-validation events; raw private reasoning is never exposed |
-| Continue a Part Studio conversation | ✅ | Durable app-server thread per Part Studio, encrypted thread mapping, reloadable transcript, and live-model refresh on every turn |
+| Continue an element conversation | ✅ | Durable app-server thread per Part Studio or Assembly, encrypted thread mapping, reloadable transcript, and live-model refresh on every turn |
 | Answer without changing CAD | ✅ | Natural assistant response with an empty operation list and no apply action |
 | Self-correct an invalid generated plan | ✅ | Up to three schema + live feature-tree validation passes |
 | Create rectangle, square, and circle sketches in 3D | ✅ | Typed Top, Front, and Right datum-plane geometry with explicit world-axis mapping |
@@ -152,16 +158,22 @@ MorAssistant now uses two complementary knowledge layers. The versioned **177-to
 | Rename existing features | ✅ | Exact feature ID and current-name match |
 | Update existing quantity expressions | ✅ | Exact parameter ID and current-expression match |
 | Verify every operation against regeneration | ✅ | Stop immediately on the first newly introduced Onshape error |
+| Read the active Assembly | ✅ | Instances, source tuples, mates/features, occurrence paths, suppression state, and absolute transforms |
+| Search and import FRCDesignLib components | ✅ | Public FRCDesignApp catalog discovery plus authenticated Onshape version/part resolution; only trusted exact source tuples validate |
+| Place Assembly instances | ✅ | Absolute object-to-world 4×4 transforms in meters, exact occurrence paths, snapshot hashes, and post-apply verification |
+| Suppress, unsuppress, and delete Assembly instances | ✅ | Exact instance ID/name/state checks; deletion is always high risk |
+| Roll back an incomplete component insertion | ✅ | If placement fails after insertion, the new instance is deleted before the failure is returned |
 | Prepare a recovery plan after failure | ✅ | Re-reads partially changed state; recovery requires a fresh approval |
 | Reject replay and double approval | ✅ | Durable plan status plus concurrency guards |
 | Survive backend restarts | ✅ | Encrypted SQLite sessions and persistent Codex credentials |
 | Edit versions | Refused | Versions are immutable; only `w` contexts are accepted |
 | Edit dimensions in custom configurations | Refused | Renames remain available; ambiguous configured edits fail closed |
-| Assemblies, drawings, releases, and document administration | Roadmap | The current extension is intentionally scoped to the active Part Studio |
+| Create implicit mates from guessed geometry | Refused | Placement is supported; mate creation waits for exact connector/entity evidence rather than hallucinated geometry |
+| Drawings, releases, and document administration | Roadmap | These element-specific workflows are not disguised as Part Studio or Assembly operations |
 
 Common operations use dedicated typed builders. For a cylinder, Sol emits a circle sketch on the plane normal to the desired axis and an extrude—not an opaque blob. Starting offsets allow separated geometry on either side of a center plane, including four real toy-car wheels instead of vertical cylinders or full-width rollers. A deterministic spatial compiler pairs vehicle wheels across both chassis sides instead of trusting sampled direction booleans. For a round hole, the agent emits a circular profile plus a `REMOVE` extrude. Fillets and chamfers add one read-only FeatureScript selection pass because Onshape’s native Feature API requires current edge transient IDs; those IDs are resolved immediately before the guarded mutation.
 
-Everything else in the active Part Studio can use the bounded native-feature fallback: Codex proposes the exact payload, the panel labels it as a native operation, the API validates its structure and references, and Onshape performs final feature validation after approval. Assemblies, drawings, release workflows, and persistent custom FeatureScript definitions need their own element-specific APIs and are not silently treated as Part Studio operations.
+Everything else in the active Part Studio can use the bounded native-feature fallback: Codex proposes the exact payload, the panel labels it as a native operation, the API validates its structure and references, and Onshape performs final feature validation after approval. Assemblies use a separate typed API vocabulary for insert, place, suppress, unsuppress, and delete. Drawings, release workflows, implicit mate geometry, and persistent custom FeatureScript definitions are not silently treated as either Part Studio or Assembly operations.
 
 For the detailed data flow, trust boundaries, state machine, and failure behavior, read **[Architecture: how MorAssistant reasons and recovers →](docs/architecture.md)**.
 
@@ -175,7 +187,7 @@ flowchart LR
 
   subgraph Backend["Persistent private backend"]
     A --> S["Encrypted sessions<br/>SQLite · AES-256-GCM"]
-    A --> I["Model inspector<br/>features · dependencies · geometry"]
+    A --> I["Model inspector<br/>features · assemblies · geometry"]
     I --> C["Codex app-server<br/>isolated CODEX_HOME"]
     C -->|strict JSON plan| A
     A --> V["Schema + live-model<br/>validation + repair feedback"]
@@ -184,7 +196,7 @@ flowchart LR
   V -->|preview only| P
   U -->|explicit approval| P
   P -->|apply saved plan ID| A
-  A -->|approved typed operation| O["Onshape OAuth + Feature API"]
+  A -->|approved typed operation| O["Onshape OAuth + Feature / Assembly API"]
   O -->|regeneration after every operation| A
 ```
 
@@ -200,7 +212,7 @@ The model never receives an Onshape OAuth token, never sends arbitrary REST requ
 - **Verified model runtime** — the configured Sol model and reasoning effort must exist in the signed-in model catalog; a mismatched thread is stopped before planning.
 - **Bounded self-repair** — invalid generated plans receive precise validator feedback for at most three attempts.
 - **Dependency-aware impact** — direct downstream dependents are surfaced before whole-feature replacement or deletion.
-- **Current-state validation** — feature names, parameter expressions, and Onshape concurrency metadata must still match.
+- **Current-state validation** — feature names, parameter expressions, assembly instance identities, occurrence transforms, trusted component sources, and Onshape microversions must still match.
 - **Per-operation verification** — execution stops on the first operation that introduces a new regeneration error.
 - **Approval-gated recovery** — a failed run can generate an alternate plan from the refreshed model, but cannot apply it automatically.
 - **Rate-aware inspection** — unchanged-microversion geometry evidence and verified feature snapshots are cached in encrypted storage, duplicate reads are avoided, and Onshape `Retry-After` windows are honored automatically.

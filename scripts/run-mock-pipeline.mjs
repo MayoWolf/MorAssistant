@@ -16,6 +16,21 @@ let microversion = 1;
 let sketchCounter = 0;
 let rateLimitFeatureReads = false;
 const sketches = [];
+let assemblyMicroversion = 1;
+let assemblyCounter = 0;
+const identityTransform = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+let assemblyInstances = [{
+  id: "shaft-1",
+  name: "1/2 in Hex Shaft <1>",
+  type: "Part",
+  suppressed: false,
+  documentId: "frc-shafts",
+  elementId: "hex-shafts",
+  documentMicroversion: "shaft-m1",
+  partId: "SHAFT",
+  fullConfiguration: "Length=0.3 meter"
+}];
+let assemblyOccurrences = [{ path: ["shaft-1"], transform: identityTransform }];
 let feature = {
   btType: "BTMFeature-134",
   featureId: "f1",
@@ -57,14 +72,114 @@ const onshape = createServer(async (request, response) => {
     });
   }
   if (request.method === "GET" && url.pathname === "/__state") {
-    return json(response, 200, { feature, sketches, microversion });
+    return json(response, 200, {
+      feature,
+      sketches,
+      microversion,
+      assembly: { instances: assemblyInstances, occurrences: assemblyOccurrences, microversion: assemblyMicroversion }
+    });
   }
   if (request.method === "POST" && url.pathname === "/__feature-rate-limit") {
     rateLimitFeatureReads = url.searchParams.get("enabled") !== "false";
     return json(response, 200, { enabled: rateLimitFeatureReads });
   }
+  if (request.method === "GET" && url.pathname === "/api/library/frc-design-lib") {
+    return json(response, 200, {
+      documents: {
+        wheels: { id: "wheels", name: "Wheels", path: { instanceId: "wheel-version-1", instanceType: "v" } }
+      },
+      elements: {
+        compliant: {
+          id: "compliant-wheels",
+          documentId: "wheels",
+          name: "Compliant Wheel (AM)",
+          microversionId: "wheel-element-m1",
+          elementType: "PARTSTUDIO",
+          vendors: ["AndyMark"]
+        }
+      }
+    });
+  }
   if (!request.headers.authorization?.startsWith("Bearer mock-")) {
     return json(response, 401, { message: "missing mock bearer token" });
+  }
+  if (request.method === "GET" && /\/api\/v13\/documents\/d\/[^/]+\/w\/[^/]+\/elements$/.test(url.pathname)) {
+    return json(response, 200, [
+      { id: "element", name: "Part Studio 1", elementType: "PARTSTUDIO" },
+      { id: "e", name: "Part Studio 1", elementType: "PARTSTUDIO" },
+      { id: "assembly", name: "Assembly 1", elementType: "ASSEMBLY" }
+    ]);
+  }
+  if (request.method === "GET" && /\/api\/v13\/parts\/d\/wheels\/v\/wheel-version-1\/e\/compliant-wheels$/.test(url.pathname)) {
+    return json(response, 200, [{
+      name: "4 in Compliant Wheel (35A, 1 in Wide, 1/2 in Hex Bore)",
+      partId: "WHEEL",
+      microversionId: "wheel-part-m1"
+    }]);
+  }
+  if (request.method === "GET" && /\/api\/v13\/assemblies\/d\/[^/]+\/w\/[^/]+\/e\/assembly$/.test(url.pathname)) {
+    return json(response, 200, {
+      rootAssembly: {
+        documentMicroversion: `assembly-m${assemblyMicroversion}`,
+        instances: assemblyInstances,
+        occurrences: assemblyOccurrences,
+        features: [{
+          id: "shaft-mate",
+          featureType: "mate",
+          suppressed: false,
+          featureData: { name: "Hex shaft axis", mateType: "REVOLUTE", matedEntities: [{ matedOccurrence: ["shaft-1"] }] }
+        }]
+      }
+    });
+  }
+  if (request.method === "POST" && /\/api\/v13\/assemblies\/d\/[^/]+\/w\/[^/]+\/e\/assembly\/instances$/.test(url.pathname)) {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (body.documentId !== "wheels" || body.elementId !== "compliant-wheels" || body.versionId !== "wheel-version-1" || body.partId !== "WHEEL") {
+      return json(response, 400, { message: "unexpected library source" });
+    }
+    const id = `wheel-${++assemblyCounter}`;
+    assemblyInstances = [...assemblyInstances, {
+      id,
+      name: `4 in Compliant Wheel <${assemblyCounter}>`,
+      type: "Part",
+      suppressed: false,
+      documentId: body.documentId,
+      elementId: body.elementId,
+      documentVersion: body.versionId,
+      documentMicroversion: "wheel-part-m1",
+      partId: body.partId,
+      fullConfiguration: body.configuration ?? ""
+    }];
+    assemblyOccurrences = [...assemblyOccurrences, { path: [id], transform: identityTransform }];
+    assemblyMicroversion += 1;
+    return json(response, 200, { id });
+  }
+  if (request.method === "POST" && /\/api\/v13\/assemblies\/d\/[^/]+\/w\/[^/]+\/e\/assembly\/modify$/.test(url.pathname)) {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    for (const definition of body.transformDefinitions ?? []) {
+      for (const occurrence of definition.occurrences ?? []) {
+        assemblyOccurrences = assemblyOccurrences.map((candidate) =>
+          JSON.stringify(candidate.path) === JSON.stringify(occurrence.path)
+            ? { ...candidate, transform: definition.transform }
+            : candidate
+        );
+      }
+    }
+    const deleted = new Set(body.deleteInstances ?? []);
+    assemblyInstances = assemblyInstances.filter((instance) => !deleted.has(instance.id));
+    assemblyOccurrences = assemblyOccurrences.filter((occurrence) => !deleted.has(occurrence.path[0]));
+    const suppressed = new Set(body.suppressInstances ?? []);
+    const unsuppressed = new Set(body.unsuppressInstances ?? []);
+    assemblyInstances = assemblyInstances.map((instance) => ({
+      ...instance,
+      suppressed: suppressed.has(instance.id) ? true : unsuppressed.has(instance.id) ? false : instance.suppressed
+    }));
+    assemblyMicroversion += 1;
+    return json(response, 200, { ok: true });
   }
   if (request.method === "GET" && /\/api\/v13\/partstudios\/d\/[^/]+\/w\/[^/]+\/e\/[^/]+\/featurespecs$/.test(url.pathname)) {
     return json(response, 200, {
@@ -244,6 +359,7 @@ const api = spawn(process.execPath, [resolve(root, "services/api/dist/server.js"
     ONSHAPE_TOKEN_URL: `${onshapeOrigin}/oauth/token`,
     ONSHAPE_BASE_URL: onshapeOrigin,
     ONSHAPE_API_VERSION: "v13",
+    FRC_DESIGN_BASE_URL: onshapeOrigin,
     ONSHAPE_SNAPSHOT_FRESH_MS: "0",
     CODEX_MODEL: "gpt-5.6-sol",
     CODEX_REASONING_EFFORT: "high",

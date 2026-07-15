@@ -1,11 +1,17 @@
-export interface PartStudioContext {
+export type OnshapeElementType = "PARTSTUDIO" | "ASSEMBLY";
+
+export interface OnshapeElementContext {
   documentId: string;
   workspaceId: string;
   elementId: string;
   workspaceOrVersion?: "w";
   configuration?: string;
   server?: string;
+  elementType?: OnshapeElementType;
 }
+
+export type PartStudioContext = OnshapeElementContext;
+export type AssemblyContext = OnshapeElementContext;
 
 export interface ConnectionStatus {
   onshape: "connected" | "disconnected";

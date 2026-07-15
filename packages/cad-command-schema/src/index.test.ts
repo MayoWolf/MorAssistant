@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   CAD_PLAN_JSON_SCHEMA,
+  assemblyTransformFingerprint,
   cadPlanSchema,
   compilePlanSpatialIntent,
   normalizeCadPlanOutput,
   parseFeatureJson,
   validatePlanAgainstIntent,
+  validatePlanAgainstAssembly,
   validatePlanAgainstFeatureTree
 } from "./index.js";
 
@@ -53,6 +55,7 @@ describe("CAD plan validation", () => {
     expect(CAD_PLAN_JSON_SCHEMA.properties.operations.items.properties.type.enum).toContain("create_rectangle_sketch");
     expect(CAD_PLAN_JSON_SCHEMA.properties.operations.items.properties.type.enum).toContain("fillet_feature_edges");
     expect(CAD_PLAN_JSON_SCHEMA.properties.operations.items.properties.type.enum).toContain("chamfer_feature_edges");
+    expect(CAD_PLAN_JSON_SCHEMA.properties.operations.items.properties.type.enum).toContain("insert_assembly_component");
     expect(CAD_PLAN_JSON_SCHEMA.required).toContain("sources");
     expect(CAD_PLAN_JSON_SCHEMA.required).toContain("message");
     expect(CAD_PLAN_JSON_SCHEMA.properties.operations.minItems).toBe(0);
@@ -384,5 +387,69 @@ describe("CAD plan validation", () => {
       .toBe(replacement);
     expect(() => validatePlanAgainstFeatureTree(replacement, [{ featureId: "f1", name: "Feature 1", featureHash: "b".repeat(64) }]))
       .toThrow("changed after the plan");
+  });
+
+  it("validates trusted FRCDesignLib insertion and guarded Assembly placement", () => {
+    const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+    const source = {
+      documentId: "frc-wheels",
+      elementId: "compliant-wheels",
+      versionId: "v1",
+      microversionId: "m1",
+      partId: "JHD",
+      configuration: "",
+      isAssembly: false,
+      isWholePartStudio: false
+    };
+    const insertion = cadPlanSchema.parse({
+      summary: "Insert one compliant wheel",
+      risk: "medium",
+      operations: [{
+        type: "insert_assembly_component",
+        componentName: "4 inch compliant wheel",
+        sourceDocumentId: source.documentId,
+        sourceElementId: source.elementId,
+        sourceVersionId: source.versionId,
+        sourceMicroversionId: source.microversionId,
+        partId: source.partId,
+        configuration: source.configuration,
+        isAssembly: false,
+        isWholePartStudio: false,
+        transform: identity,
+        reason: "Import the exact catalog part"
+      }],
+      warnings: [],
+      requiresApproval: true
+    });
+    const snapshot = {
+      instances: [{ id: "shaft-1", name: "Hex Shaft <1>", suppressed: false }],
+      occurrences: [{ path: ["shaft-1"], transform: identity }],
+      trustedSources: [source]
+    };
+    expect(validatePlanAgainstAssembly(insertion, snapshot)).toBe(insertion);
+    expect(() => validatePlanAgainstAssembly(insertion, { ...snapshot, trustedSources: [] }))
+      .toThrow("not present in the inspected assembly or trusted FRCDesignLib results");
+
+    const placement = cadPlanSchema.parse({
+      summary: "Move the shaft",
+      risk: "medium",
+      operations: [{
+        type: "transform_assembly_instance",
+        instanceId: "shaft-1",
+        instanceName: "Hex Shaft <1>",
+        occurrencePath: ["shaft-1"],
+        currentTransformHash: assemblyTransformFingerprint(identity),
+        transform: [1, 0, 0, 0.1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+        reason: "Place it at the approved location"
+      }],
+      warnings: [],
+      requiresApproval: true
+    });
+    expect(validatePlanAgainstAssembly(placement, snapshot)).toBe(placement);
+    expect(() => validatePlanAgainstAssembly(placement, {
+      ...snapshot,
+      occurrences: [{ path: ["shaft-1"], transform: [1, 0, 0, 0.01, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1] }]
+    })).toThrow("moved after the plan");
+    expect(() => validatePlanAgainstAssembly(plan, snapshot)).toThrow("can only run in a Part Studio");
   });
 });

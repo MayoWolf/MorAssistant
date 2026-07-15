@@ -8,6 +8,7 @@ import {
   cadPlanSchema,
   compilePlanSpatialIntent,
   normalizeCadPlanOutput,
+  validatePlanAgainstAssembly,
   validatePlanAgainstIntent,
   validatePlanAgainstFeatureTree,
   type CadPlan
@@ -21,6 +22,7 @@ import {
   featureFingerprint,
   selectOnshapeCapabilities,
   type FeatureDependencyNode,
+  type AssemblyInspection,
   type PartStudioGeometrySummary,
   type PartStudioInspection
 } from "@morassistant/onshape-client";
@@ -72,6 +74,10 @@ function boundedJson(value: unknown, maximumLength: number): string | undefined 
   if (value === undefined) return undefined;
   const serialized = JSON.stringify(value);
   return serialized.length <= maximumLength ? serialized : undefined;
+}
+
+function isAssemblyInspection(inspection: PartStudioInspection | AssemblyInspection): inspection is AssemblyInspection {
+  return "elementType" in inspection && inspection.elementType === "ASSEMBLY";
 }
 
 function repeatedExpressions(inspection: PartStudioInspection): Array<{
@@ -131,6 +137,7 @@ export interface PlanningResult {
   runtime: CodexRuntimeStatus;
   inspection: {
     featureCount: number;
+    instanceCount?: number;
     capabilityCount: number;
     nativeFeatureTypeCount: number;
     capabilityCatalogVersion: string;
@@ -475,12 +482,173 @@ export class CodexWorker {
     }
   }
 
-  async createPlan(
+  private async createAssemblyPlan(
     prompt: string,
-    inspection: PartStudioInspection,
+    inspection: AssemblyInspection,
     onProgress?: PlanningProgressCallback,
     conversation?: PlanningConversation
   ): Promise<PlanningResult> {
+    const progress = (id: string, kind: PlanningProgress["kind"], message: string): void =>
+      onProgress?.({ id, kind, message: message.slice(0, 1_200), at: Date.now() });
+    await this.start();
+    if (await this.accountStatus() !== "connected") throw new Error("Connect ChatGPT before creating a plan.");
+    const configuredRuntime = await this.runtimeStatus();
+    if (!configuredRuntime.available) {
+      throw new Error(`Configured Codex runtime ${this.model ?? "default"}${this.reasoningEffort ? ` at ${this.reasoningEffort} effort` : ""} is unavailable for this ChatGPT account. MorAssistant will not silently downgrade.`);
+    }
+
+    const instanceNames = new Map(inspection.instances.map((instance) => [instance.id, instance.name]));
+    const modelSnapshot = {
+      elementType: inspection.elementType,
+      documentMicroversion: inspection.documentMicroversion,
+      instances: inspection.instances,
+      occurrences: inspection.occurrences.map((occurrence) => ({
+        ...occurrence,
+        topLevelInstanceName: instanceNames.get(occurrence.path[0] ?? "")
+      })),
+      assemblyFeatures: inspection.features,
+      frcDesignLibCandidates: inspection.libraryCandidates,
+      trustedComponentSources: inspection.trustedSources,
+      inspectionWarnings: inspection.warnings
+    };
+    progress(
+      "inspection",
+      "inspection",
+      `Read ${inspection.instances.length} assembly instances, ${inspection.occurrences.length} occurrence transforms, and ${inspection.libraryCandidates.length} relevant FRCDesignLib components.`
+    );
+
+    const baseInstructions = [
+      "You are a dependency-aware native Onshape Assembly planning agent.",
+      "Return only a structured plan matching the supplied schema.",
+      "This is an ongoing conversation tied to one Assembly tab. Carry forward the user's goals, component references, corrections, and earlier decisions, while treating the newest trusted Assembly snapshot as authoritative.",
+      "Write message as a concise natural conversational reply. For a question or design discussion, answer directly and return an empty operations array. For a change, explain the preview; the trusted host will require explicit approval before mutation.",
+      "Use only insert_assembly_component, transform_assembly_instance, set_assembly_instance_suppressed, and delete_assembly_instance in an Assembly. Never emit Part Studio feature operations here.",
+      "The snapshot includes exact current instances, absolute occurrence transforms, assembly mates/features, reusable component source records, and prompt-matched FRCDesignLib catalog results obtained through the installed FRCDesignApp's public catalog.",
+      "For an FRCDesignLib import, copy every sourceDocumentId, sourceElementId, sourceVersionId/sourceMicroversionId, partId, configuration, isAssembly, and isWholePartStudio value exactly from one frcDesignLibCandidates entry. Never invent or alter a source ID or configuration.",
+      "A component already used in this assembly may be cloned by copying the exact source tuple from trustedComponentSources. Prefer this when the user asks for more of an existing wheel, bearing, shaft, sprocket, or other library component.",
+      "insert_assembly_component creates one new top-level instance and then places it with transform. Emit one insertion per desired component. A pair of wheels therefore needs two insert operations.",
+      "Onshape transforms are absolute object-to-world 4x4 affine matrices in row-major order: [R00,R01,R02,Tx,R10,R11,R12,Ty,R20,R21,R22,Tz,0,0,0,1]. Translation is in meters, not millimeters. Never use a relative transform.",
+      "For transform_assembly_instance, use the exact instanceId, instanceName, occurrencePath, and currentTransformHash from one current occurrence. Do not transform a nested item using a guessed path.",
+      "When placing a wheel on a hex shaft, first identify the target shaft occurrence and its world axis from its rotation matrix. Align the wheel's bore axis to that same world axis, preserve a proper orthonormal rotation, and put its center on the shaft axis at an explicit axial offset that avoids overlap. Use existing wheel-on-shaft transforms and mate relationships in the snapshot as the strongest placement exemplars.",
+      "If the snapshot cannot establish a physically reliable bore axis, shaft axis, or axial offset, ask one concise clarification in message and return no operations. Never pretend that insertion at the global origin completes placement.",
+      "Use assemblyFeatures to respect existing mates. Transforming a fully constrained occurrence may be rejected by Onshape; warn when the target is already mated. This operation set places parts but does not fabricate implicit mate geometry.",
+      "Use set_assembly_instance_suppressed only when the current state in the snapshot matches currentSuppressed. Use delete_assembly_instance only when explicitly requested, and mark deletions high risk.",
+      "You have live first-party web search. Use it for current rules, the 2026 FRC season, manufacturer dimensions, standards, or real-world facts not present in the Assembly snapshot. Prefer FIRST, official manuals, manufacturers, and standards bodies; record sources actually used.",
+      "Broad real-world context is allowed. Translate sourced facts into component choices and placements, distinguish facts from design assumptions, and state material assumptions in warnings.",
+      "Do not invent IDs, transforms, configurations, or unsupported mate geometry. Prefer the smallest reversible plan and flag uncertainty."
+    ].join("\n");
+    const threadSettings = {
+      ...(this.model ? { model: this.model } : {}),
+      cwd: join(this.codexHome, "workspace"),
+      approvalPolicy: "never",
+      sandbox: "read-only",
+      config: { web_search: "live" },
+      baseInstructions
+    };
+    type ThreadResponse = {
+      thread: { id: string };
+      model: string;
+      modelProvider: string;
+      reasoningEffort?: string | null;
+      serviceTier?: string | null;
+    };
+    let threadResponse: ThreadResponse | undefined;
+    let continuedConversation = false;
+    if (conversation?.threadId) {
+      progress("conversation", "reasoning", "Continuing the saved Assembly conversation and its prior design context.");
+      try {
+        threadResponse = await this.request("thread/resume", { threadId: conversation.threadId, ...threadSettings }) as ThreadResponse;
+        continuedConversation = true;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (!/not found|unknown saved thread|does not exist|no rollout|failed to find/iu.test(message)) throw error;
+        progress("conversation", "reasoning", "The saved conversation could not be resumed, so Sol is rebuilding it from visible chat history.");
+      }
+    }
+    if (!threadResponse) {
+      threadResponse = await this.request("thread/start", {
+        ...threadSettings,
+        serviceName: "morassistant-onshape-assembly-agent",
+        ephemeral: false
+      }) as ThreadResponse;
+    }
+    if (this.model && threadResponse.model !== this.model) {
+      throw new Error(`Codex started ${threadResponse.model} instead of configured model ${this.model}. MorAssistant stopped rather than silently downgrading.`);
+    }
+    const runtimeEffort = this.reasoningEffort ?? threadResponse.reasoningEffort ?? configuredRuntime.reasoningEffort;
+    const runtime: CodexRuntimeStatus = {
+      ...(this.model ? { configuredModel: this.model } : {}),
+      model: threadResponse.model,
+      modelProvider: threadResponse.modelProvider,
+      ...(runtimeEffort ? { reasoningEffort: runtimeEffort } : {}),
+      ...(threadResponse.serviceTier ? { serviceTier: threadResponse.serviceTier } : {}),
+      available: true
+    };
+    const seededHistory = !continuedConversation && conversation?.priorTurns?.length
+      ? `Earlier visible conversation turns to restore context:\n${JSON.stringify(conversation.priorTurns.slice(-12))}`
+      : "";
+    let feedback = "";
+    let lastError: Error | undefined;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      progress("attempt", "reasoning", attempt === 1
+        ? "Sol is analyzing assembly constraints, component sources, placement, and any needed research."
+        : `Sol is repairing validation issues (attempt ${attempt} of 3).`);
+      const text = [
+        attempt === 1 ? seededHistory : "",
+        `User request:\n${prompt}`,
+        feedback,
+        `Current Assembly model snapshot:\n${JSON.stringify(modelSnapshot)}`
+      ].filter(Boolean).join("\n\n");
+      try {
+        const output = await this.runPlanningTurn(threadResponse.thread.id, text, onProgress);
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(output);
+        } catch {
+          throw new Error("The response was not valid JSON.");
+        }
+        const plan = cadPlanSchema.parse(normalizeCadPlanOutput(parsed));
+        validatePlanAgainstAssembly(plan, inspection);
+        progress("validation", "validation", "Trusted Assembly validation passed. The preview is ready for approval.");
+        return {
+          plan,
+          attempts: attempt,
+          threadId: threadResponse.thread.id,
+          continuedConversation,
+          runtime,
+          inspection: {
+            featureCount: inspection.features.length,
+            instanceCount: inspection.instances.length,
+            capabilityCount: 4,
+            nativeFeatureTypeCount: 0,
+            capabilityCatalogVersion: "assembly-api-v1",
+            dependencyCount: inspection.features.reduce((count, feature) => count + feature.occurrencePaths.length, 0),
+            geometry: {},
+            warnings: inspection.warnings
+          }
+        };
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error("Unknown Assembly plan validation failure.");
+        progress("validation", "validation", `Validation requested a correction: ${lastError.message.slice(0, 500)}`);
+        feedback = [
+          "Your previous proposed plan failed trusted-host validation.",
+          `Validation feedback: ${lastError.message.slice(0, 2_000)}`,
+          "Re-read the supplied Assembly snapshot and return a corrected complete plan. Do not explain the failure outside the plan warnings."
+        ].join("\n");
+      }
+    }
+    throw new Error(`Codex could not produce a safe valid Assembly plan after 3 attempts: ${lastError?.message ?? "validation failed"}`);
+  }
+
+  async createPlan(
+    prompt: string,
+    inspection: PartStudioInspection | AssemblyInspection,
+    onProgress?: PlanningProgressCallback,
+    conversation?: PlanningConversation
+  ): Promise<PlanningResult> {
+    if (isAssemblyInspection(inspection)) {
+      return this.createAssemblyPlan(prompt, inspection, onProgress, conversation);
+    }
     const progress = (id: string, kind: PlanningProgress["kind"], message: string): void =>
       onProgress?.({ id, kind, message: message.slice(0, 1_200), at: Date.now() });
     await this.start();

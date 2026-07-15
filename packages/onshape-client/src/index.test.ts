@@ -563,4 +563,128 @@ describe("Onshape feature edits", () => {
     expect(String(fetchMock.mock.calls[1]?.[0])).toMatch(/\/features\/featureid\/f1$/u);
     expect((fetchMock.mock.calls[1]?.[1] as RequestInit).method).toBe("DELETE");
   });
+
+  it("inspects Assembly instances, mates, sources, and absolute occurrence transforms", async () => {
+    const client = new OnshapeClient({ accessToken: () => "token" });
+    const transform = [1, 0, 0, 0.1, 0, 1, 0, 0.2, 0, 0, 1, 0.3, 0, 0, 0, 1];
+    const inspection = await client.inspectAssembly(
+      { documentId: "d", workspaceId: "w", elementId: "assembly" },
+      {
+        rootAssembly: {
+          documentMicroversion: "assembly-m1",
+          instances: [{
+            id: "shaft-1",
+            name: "1/2 in Hex Shaft <1>",
+            type: "Part",
+            suppressed: false,
+            documentId: "frc-shafts",
+            elementId: "hex-shafts",
+            documentMicroversion: "shaft-m1",
+            partId: "JHD",
+            fullConfiguration: "Length=0.3 meter"
+          }],
+          occurrences: [{ path: ["shaft-1"], transform, fixed: false }],
+          features: [{
+            id: "mate-1",
+            featureType: "mate",
+            suppressed: false,
+            featureData: {
+              name: "Hex shaft revolute",
+              mateType: "REVOLUTE",
+              matedEntities: [{ matedOccurrence: ["shaft-1"] }]
+            }
+          }]
+        }
+      }
+    );
+    expect(inspection).toMatchObject({
+      elementType: "ASSEMBLY",
+      documentMicroversion: "assembly-m1",
+      instances: [{ id: "shaft-1", partId: "JHD", configuration: "Length=0.3 meter" }],
+      occurrences: [{ path: ["shaft-1"], transform }],
+      features: [{ id: "mate-1", name: "Hex shaft revolute", mateType: "REVOLUTE" }]
+    });
+    expect(inspection.occurrences[0]?.transformHash).toMatch(/^[a-f0-9]{64}$/u);
+    expect(inspection.trustedSources[0]).toMatchObject({ documentId: "frc-shafts", elementId: "hex-shafts", partId: "JHD" });
+  });
+
+  it("searches the FRCDesignApp catalog and resolves exact versioned wheel part IDs", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.startsWith("https://frc.test/api/library/")) {
+        return new Response(JSON.stringify({
+          documents: {
+            wheels: { id: "wheels", name: "Wheels", path: { instanceId: "version-1", instanceType: "v" } }
+          },
+          elements: {
+            compliant: {
+              id: "compliant",
+              documentId: "wheels",
+              name: "Compliant Wheel (AM)",
+              microversionId: "element-m1",
+              elementType: "PARTSTUDIO",
+              vendors: ["AndyMark"]
+            }
+          }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify([{
+        name: "4 in Compliant Wheel (35A, 1 in Wide, 1/2 in Hex Bore)",
+        partId: "JHD",
+        microversionId: "part-m1"
+      }]), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new OnshapeClient({ accessToken: () => "token", frcDesignBaseUrl: "https://frc.test" });
+    await expect(client.searchFrcDesignLibrary("import a compliant wheel", 4)).resolves.toEqual([
+      expect.objectContaining({
+        source: "FRCDesignLib",
+        documentId: "wheels",
+        elementId: "compliant",
+        versionId: "version-1",
+        microversionId: "part-m1",
+        partId: "JHD",
+        name: "4 in Compliant Wheel (35A, 1 in Wide, 1/2 in Hex Bore)"
+      })
+    ]);
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("/parts/d/wheels/v/version-1/e/compliant");
+  });
+
+  it("inserts a versioned component and places its new occurrence with an absolute transform", async () => {
+    const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        rootAssembly: {
+          documentMicroversion: "m2",
+          instances: [{ id: "wheel-1", name: "Compliant Wheel <1>", type: "Part", documentId: "wheels", elementId: "compliant", documentVersion: "v1", partId: "JHD" }],
+          occurrences: [{ path: ["wheel-1"], transform: identity }],
+          features: []
+        }
+      }), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new OnshapeClient({ accessToken: () => "token" });
+    const context = { documentId: "target", workspaceId: "workspace", elementId: "assembly" };
+    const before = await client.inspectAssembly(context, { rootAssembly: { documentMicroversion: "m1", instances: [], occurrences: [], features: [] } });
+    const result = await client.applyAssemblyOperationDetailed(context, {
+      type: "insert_assembly_component",
+      componentName: "Compliant Wheel",
+      sourceDocumentId: "wheels",
+      sourceElementId: "compliant",
+      sourceVersionId: "v1",
+      sourceMicroversionId: "part-m1",
+      partId: "JHD",
+      configuration: "",
+      isAssembly: false,
+      isWholePartStudio: false,
+      transform: identity,
+      reason: "Place the requested wheel"
+    }, before);
+    expect(result.message).toContain("Inserted and placed Compliant Wheel");
+    const insertBody = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body));
+    expect(insertBody).toMatchObject({ documentId: "wheels", elementId: "compliant", versionId: "v1", partId: "JHD" });
+    const transformBody = JSON.parse(String((fetchMock.mock.calls[2]?.[1] as RequestInit).body));
+    expect(transformBody.transformDefinitions[0]).toEqual({ isRelative: false, occurrences: [{ path: ["wheel-1"] }], transform: identity });
+  });
 });

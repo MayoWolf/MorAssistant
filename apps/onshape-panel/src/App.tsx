@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import type { StoredCadPlan } from "@morassistant/cad-command-schema";
-import type { ConnectionStatus, DeviceCodeLogin, PartStudioContext } from "@morassistant/shared-types";
+import type { ConnectionStatus, DeviceCodeLogin, OnshapeElementContext, OnshapeElementType } from "@morassistant/shared-types";
 
 const emptyStatus: ConnectionStatus = { onshape: "disconnected", codex: "disconnected" };
 const apiOrigin = (import.meta.env.VITE_API_ORIGIN ?? "").replace(/\/$/, "");
@@ -47,14 +47,21 @@ type ConversationResponse = {
   hasPersistentContext: boolean;
 };
 
+type ElementContextResponse = {
+  context: OnshapeElementContext;
+  name: string;
+  elementType: OnshapeElementType;
+};
+
 type BusyState = "planning" | "applying" | "recovering" | null;
 
-function contextFromUrl(): PartStudioContext | null {
+function contextFromUrl(): OnshapeElementContext | null {
   const params = new URLSearchParams(location.search);
   const documentId = params.get("documentId") ?? params.get("did");
   const workspaceId = params.get("workspaceId") ?? params.get("wid");
   const elementId = params.get("elementId") ?? params.get("eid");
   const workspaceOrVersion = params.get("workspaceOrVersion");
+  const elementType = params.get("elementType");
   const rawConfiguration = params.get("configuration")?.trim();
   const configuration = rawConfiguration
     && rawConfiguration.toLowerCase() !== "default"
@@ -68,11 +75,12 @@ function contextFromUrl(): PartStudioContext | null {
     elementId,
     ...(workspaceOrVersion === "w" ? { workspaceOrVersion: "w" as const } : {}),
     ...(configuration ? { configuration } : {}),
-    ...(params.get("server") ? { server: params.get("server")! } : {})
+    ...(params.get("server") ? { server: params.get("server")! } : {}),
+    ...(elementType === "PARTSTUDIO" || elementType === "ASSEMBLY" ? { elementType } : {})
   };
 }
 
-function contextQuery(context: PartStudioContext): string {
+function contextQuery(context: OnshapeElementContext): string {
   const params = new URLSearchParams({
     documentId: context.documentId,
     workspaceId: context.workspaceId,
@@ -81,6 +89,7 @@ function contextQuery(context: PartStudioContext): string {
   });
   if (context.configuration) params.set("configuration", context.configuration);
   if (context.server) params.set("server", context.server);
+  if (context.elementType) params.set("elementType", context.elementType);
   return params.toString();
 }
 
@@ -129,7 +138,7 @@ function LiveActivity({ progress, label }: { progress: PlanningProgress[]; label
   const visible = progress.length > 0 ? progress : [{
     id: "starting",
     kind: "inspection" as const,
-    message: "Starting Sol and loading the current Part Studio context.",
+    message: "Starting Sol and loading the current Onshape tab context.",
     at: Date.now()
   }];
   return <section className="live-activity" aria-label={label} aria-live="polite">
@@ -156,6 +165,10 @@ function operationTitle(operation: PlanOperation): string {
     case "create_feature": return "Create native feature";
     case "replace_feature": return "Replace native feature";
     case "delete_feature": return "Delete feature";
+    case "insert_assembly_component": return "Insert library component";
+    case "transform_assembly_instance": return "Place assembly instance";
+    case "set_assembly_instance_suppressed": return operation.suppressed ? "Suppress assembly instance" : "Unsuppress assembly instance";
+    case "delete_assembly_instance": return "Delete assembly instance";
   }
 }
 
@@ -181,6 +194,14 @@ function OperationDetail({ operation }: { operation: PlanOperation }) {
       return <p><code>{operation.currentName}</code><i>→</i><code>{operation.featureType}</code></p>;
     case "delete_feature":
       return <p><code>{operation.currentName}</code><i>→</i><code>deleted</code></p>;
+    case "insert_assembly_component":
+      return <p><code>{operation.componentName}</code><i>·</i><code>FRC/library source · placed in assembly</code></p>;
+    case "transform_assembly_instance":
+      return <p><code>{operation.instanceName}</code><i>→</i><code>absolute assembly placement</code></p>;
+    case "set_assembly_instance_suppressed":
+      return <p><code>{operation.instanceName}</code><i>→</i><code>{operation.suppressed ? "suppressed" : "unsuppressed"}</code></p>;
+    case "delete_assembly_instance":
+      return <p><code>{operation.instanceName}</code><i>→</i><code>deleted</code></p>;
   }
 }
 
@@ -203,11 +224,11 @@ function PlanCard({
     </div>
     <p className="assistant-copy">{plan.message ?? plan.summary}</p>
     {plan.agentTrace && <div className="agent-trace" aria-label="Model inspection summary">
-      <span><strong>{plan.agentTrace.featureCount}</strong><small>features read</small></span>
+      <span><strong>{plan.agentTrace.elementType === "ASSEMBLY" ? plan.agentTrace.instanceCount ?? "—" : plan.agentTrace.featureCount}</strong><small>{plan.agentTrace.elementType === "ASSEMBLY" ? "instances read" : "features read"}</small></span>
       <span><strong>{plan.agentTrace.capabilityCount ?? "—"}</strong><small>CAD tools learned</small></span>
-      <span><strong>{plan.agentTrace.nativeFeatureTypeCount ?? "—"}</strong><small>live feature types</small></span>
-      <span><strong>{plan.agentTrace.dependencyCount}</strong><small>dependency links</small></span>
-      <span><strong>{plan.agentTrace.geometry.solidBodyCount ?? plan.agentTrace.geometry.partCount ?? "—"}</strong><small>solid bodies</small></span>
+      <span><strong>{plan.agentTrace.elementType === "ASSEMBLY" ? plan.agentTrace.featureCount : plan.agentTrace.nativeFeatureTypeCount ?? "—"}</strong><small>{plan.agentTrace.elementType === "ASSEMBLY" ? "mates / features" : "live feature types"}</small></span>
+      <span><strong>{plan.agentTrace.dependencyCount}</strong><small>{plan.agentTrace.elementType === "ASSEMBLY" ? "mate links" : "dependency links"}</small></span>
+      <span><strong>{plan.agentTrace.elementType === "ASSEMBLY" ? plan.operations.filter((operation) => operation.type === "insert_assembly_component").length : plan.agentTrace.geometry.solidBodyCount ?? plan.agentTrace.geometry.partCount ?? "—"}</strong><small>{plan.agentTrace.elementType === "ASSEMBLY" ? "library inserts" : "solid bodies"}</small></span>
       <span><strong>{plan.agentTrace.planningAttempts}</strong><small>validation pass{plan.agentTrace.planningAttempts === 1 ? "" : "es"}</small></span>
     </div>}
     {plan.agentTrace?.runtime && <p className="runtime-proof">
@@ -266,7 +287,9 @@ function ConversationTurn({
 }
 
 export function App() {
-  const context = useMemo(contextFromUrl, []);
+  const launchContext = useMemo(contextFromUrl, []);
+  const [context, setContext] = useState<OnshapeElementContext | null>(launchContext);
+  const [contextName, setContextName] = useState<string | null>(null);
   const [status, setStatus] = useState<ConnectionStatus | null>(null);
   const [deviceLogin, setDeviceLogin] = useState<DeviceCodeLogin | null>(null);
   const [prompt, setPrompt] = useState("");
@@ -306,6 +329,19 @@ export function App() {
       if (timer) clearTimeout(timer);
     };
   }, [refreshStatus]);
+
+  useEffect(() => {
+    if (!context || status?.onshape !== "connected" || contextName) return;
+    let active = true;
+    void api<ElementContextResponse>(`/api/context?${contextQuery(context)}`).then((response) => {
+      if (!active) return;
+      setContext(response.context);
+      setContextName(response.name);
+    }).catch((cause) => {
+      if (active) setError(cause instanceof Error ? cause.message : "Could not identify the current Onshape tab.");
+    });
+    return () => { active = false; };
+  }, [context, contextName, status?.onshape]);
 
   useEffect(() => {
     if (!context) return;
@@ -408,6 +444,8 @@ export function App() {
   };
 
   const ready = status?.onshape === "connected" && status.codex === "connected" && Boolean(context);
+  const isAssembly = context?.elementType === "ASSEMBLY";
+  const elementLabel = isAssembly ? "Assembly" : "Part Studio";
   const runtimeLabel = status?.codexRuntime
     ? `${status.codexRuntime.model.replace(/^gpt-/u, "GPT ").replace(/-sol$/u, " Sol")}${status.codexRuntime.reasoningEffort ? ` · ${status.codexRuntime.reasoningEffort}` : ""}`
     : "Codex";
@@ -421,7 +459,7 @@ export function App() {
     </header>
 
     {!context && <section className="notice warning">
-      <strong>Open this panel from a Part Studio</strong>
+      <strong>Open this panel from a Part Studio or Assembly</strong>
       <p>The extension URL must include documentId, workspaceId, and elementId.</p>
     </section>}
 
@@ -450,16 +488,18 @@ export function App() {
 
     {(error || statusError) && <section className="notice error" role="alert"><strong>Something needs attention</strong><p>{error ?? statusError}</p></section>}
     {recoveryMessage && <section className="notice recovery"><strong>Recovery plan ready</strong><p>{recoveryMessage}</p></section>}
-    <section className="chat-shell" aria-label="Part Studio conversation">
+    <section className="chat-shell" aria-label={`${elementLabel} conversation`}>
       <div className="chat-meta">
-        <div><span className="eyebrow">Part Studio chat</span><strong>{history.length} turn{history.length === 1 ? "" : "s"}</strong></div>
+        <div><span className="eyebrow">{elementLabel} chat{contextName ? ` · ${contextName}` : ""}</span><strong>{history.length} turn{history.length === 1 ? "" : "s"}</strong></div>
         <span className={hasPersistentContext ? "memory-on" : "memory-new"}><i />{hasPersistentContext ? "Context active" : "New context"}</span>
       </div>
       {!historyLoaded && <div className="chat-empty"><BrandMark /><strong>Loading conversation…</strong></div>}
       {historyLoaded && history.length === 0 && !pendingPrompt && <div className="chat-empty">
         <BrandMark />
         <strong>Build with Sol, one conversation at a time.</strong>
-        <p>Ask for a part, then keep refining it: “make it wider,” “add four mounting holes,” or “now fillet those edges.” Sol keeps the thread and re-reads the live model every turn.</p>
+        <p>{isAssembly
+          ? "Ask about the mechanism, import an FRCDesignLib component, place wheels on shafts, move instances, or suppress hardware. Sol keeps the thread and re-reads the live assembly every turn."
+          : "Ask for a part, then keep refining it: “make it wider,” “add four mounting holes,” or “now fillet those edges.” Sol keeps the thread and re-reads the live model every turn."}</p>
       </div>}
       {history.map((item, index) => <ConversationTurn
         key={item.id}
@@ -480,18 +520,20 @@ export function App() {
     </section>
 
     <section className="workspace composer">
-      <div className="section-title"><span className="eyebrow">Message Sol</span><span className="safe-label">Same Part Studio context</span></div>
+      <div className="section-title"><span className="eyebrow">Message Sol</span><span className="safe-label">Same {elementLabel} context</span></div>
       <form onSubmit={(event) => void createPlan(event)}>
         <textarea
           value={prompt}
           onChange={(event) => updatePrompt(event.target.value)}
           onKeyDown={handlePromptKeyDown}
-          placeholder={history.length ? "Keep going… make it larger, move it, add holes, or ask why." : "Describe what you want to build or change…"}
+          placeholder={history.length
+            ? isAssembly ? "Keep going… import a wheel, place it on that shaft, move it, or ask why." : "Keep going… make it larger, move it, add holes, or ask why."
+            : isAssembly ? "Describe what you want to inspect, import, or place in this assembly…" : "Describe what you want to build or change…"}
           rows={4}
           disabled={!ready || busy !== null}
         />
         <div className="prompt-footer">
-          <span>{hasPersistentContext ? "Using conversation memory" : context ? "Current Part Studio" : "No Part Studio context"}</span>
+          <span>{hasPersistentContext ? "Using conversation memory" : context ? `Current ${elementLabel}` : "No Onshape context"}</span>
           <button type="submit" disabled={!ready || prompt.trim().length < 3 || busy !== null}>
             {busy === "planning" ? "Thinking…" : "Send"}<span>⌘/Ctrl ↵</span>
           </button>

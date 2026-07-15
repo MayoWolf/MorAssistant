@@ -16,11 +16,68 @@ function send(message) {
 
 function planFromInput(params, earlierTurns = []) {
   const text = params?.input?.find((item) => item?.type === "text")?.text ?? "";
-  const marker = "Current Part Studio model snapshot:\n";
+  const assemblyMarker = "Current Assembly model snapshot:\n";
+  const partStudioMarker = "Current Part Studio model snapshot:\n";
+  const marker = text.includes(assemblyMarker) ? assemblyMarker : partStudioMarker;
   const markerIndex = text.indexOf(marker);
   const model = markerIndex >= 0 ? JSON.parse(text.slice(markerIndex + marker.length)) : { features: [] };
   const snapshot = model.features ?? [];
   const userRequest = markerIndex >= 0 ? text.slice(0, markerIndex) : text;
+  if (marker === assemblyMarker) {
+    if (/what did we just|what have we done|summarize (?:our|the) conversation/i.test(userRequest)) {
+      return {
+        summary: "Answer the Assembly conversation follow-up",
+        message: `I retained ${earlierTurns.length} earlier turn${earlierTurns.length === 1 ? "" : "s"} in this Assembly conversation.`,
+        risk: "low",
+        operations: [],
+        warnings: [],
+        requiresApproval: true
+      };
+    }
+    if (/assembly inventory|what is in this assembly/i.test(userRequest)) {
+      return {
+        summary: "Describe the current assembly",
+        message: `This assembly contains ${model.instances?.length ?? 0} top-level instance(s), including ${model.instances?.map((instance) => instance.name).join(", ") || "none"}.`,
+        risk: "low",
+        operations: [],
+        warnings: [],
+        requiresApproval: true
+      };
+    }
+    if (/insert assembly wheel|import.*wheel/i.test(userRequest)) {
+      const candidate = model.frcDesignLibCandidates?.find((item) => /wheel/i.test(item.name));
+      if (!candidate) throw new Error("The fake Assembly planner needs an FRCDesignLib wheel candidate.");
+      return {
+        summary: `Import and place ${candidate.name}`,
+        message: `I found the exact versioned ${candidate.name} in FRCDesignLib and prepared one absolute Assembly placement.`,
+        risk: "medium",
+        operations: [{
+          type: "insert_assembly_component",
+          componentName: candidate.name,
+          sourceDocumentId: candidate.documentId,
+          sourceElementId: candidate.elementId,
+          sourceVersionId: candidate.versionId ?? null,
+          sourceMicroversionId: candidate.microversionId ?? null,
+          partId: candidate.partId ?? null,
+          configuration: candidate.configuration ?? "",
+          isAssembly: candidate.isAssembly ?? false,
+          isWholePartStudio: candidate.isWholePartStudio ?? false,
+          transform: [1, 0, 0, 0.05, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+          reason: "Insert the trusted catalog part and align it to the fixture shaft axis"
+        }],
+        warnings: [],
+        requiresApproval: true
+      };
+    }
+    return {
+      summary: "No Assembly change requested",
+      message: "I inspected the current Assembly and no mutation is needed.",
+      risk: "low",
+      operations: [],
+      warnings: [],
+      requiresApproval: true
+    };
+  }
   if (!model.capabilityCatalog?.completeInventory?.includes("sketch_geometry:") ||
       !model.capabilityCatalog?.relevantCurriculum?.includes("requires:") ||
       !model.liveNativeFeatures?.availableFeatureTypes?.some((entry) => entry.featureType === "chamfer") ||
@@ -280,8 +337,10 @@ lines.on("line", (line) => {
         if (request.params?.config?.web_search !== "live") {
           throw new Error("thread/start must enable live first-party web search");
         }
-        if (!String(request.params?.baseInstructions).includes("Wheel circles therefore belong on the Front plane")) {
-          throw new Error("thread/start must teach explicit vehicle coordinate frames and wheel orientation");
+        const instructions = String(request.params?.baseInstructions);
+        if (!instructions.includes("Wheel circles therefore belong on the Front plane") &&
+            !instructions.includes("insert_assembly_component creates one new top-level instance")) {
+          throw new Error("thread/start must teach the active Part Studio or Assembly coordinate model");
         }
         if (request.params?.ephemeral !== false) {
           throw new Error("thread/start must persist the conversation rollout");
