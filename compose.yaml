@@ -29,6 +29,8 @@ services:
       CODEX_USERS_ROOT: /data/codex-users
       CODEX_MAX_WORKERS: "1"
       CODEX_IDLE_TIMEOUT_MS: "900000"
+      CAD_PLANNING_TIMEOUT_MS: ${CAD_PLANNING_TIMEOUT_MS:-240000}
+      CAD_PLANNING_IDLE_MS: ${CAD_PLANNING_IDLE_MS:-90000}
     ports:
       - "127.0.0.1:3000:3000"
     volumes:

@@ -1,15 +1,19 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline";
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 if (process.env.ONSHAPE_CLIENT_SECRET || process.env.SESSION_SECRET || process.env.SESSION_ENCRYPTION_KEY) {
   throw new Error("The Codex worker inherited a backend secret.");
 }
 
-let connected = false;
+const accountFile = join(process.env.CODEX_HOME, "mock-account-connected");
+let connected = existsSync(accountFile);
 let threadCounter = 0;
 let turnCounter = 0;
 const threads = new Map();
 const toolReplies = new Map();
+const activeTurns = new Map();
 
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -316,6 +320,7 @@ lines.on("line", (line) => {
         const loginId = "login-test";
         send({ id: request.id, result: { type: "chatgptDeviceCode", loginId, verificationUrl: "https://auth.openai.com/device", userCode: "MOR-TEST" } });
         connected = true;
+        writeFileSync(accountFile, "");
         // Deliberately emit immediately to exercise the worker's event-race handling.
         send({ method: "account/login/completed", params: { loginId, success: true, error: null } });
         break;
@@ -416,6 +421,17 @@ lines.on("line", (line) => {
         const userText = request.params?.input?.find((entry) => entry?.type === "text")?.text ?? "";
         thread.turns.push(userText);
         send({ id: request.id, result: { turn: { id, status: "inProgress", items: [], error: null } } });
+        const stall = /User request:\nHold the (silent|busy|unresponsive) planning fixture/u.exec(userText)?.[1];
+        send({ method: "thread/tokenUsage/updated", params: {
+          threadId: request.params.threadId, turnId: id, tokenUsage: { last: { totalTokens: 3210 } }
+        } });
+        if (stall) {
+          const timer = stall === "busy" ? setInterval(() => {
+            send({ method: "item/agentMessage/delta", params: { threadId: request.params.threadId, turnId: id } });
+          }, 70) : undefined;
+          activeTurns.set(id, { stall, timer });
+          break;
+        }
         send({
           method: "item/reasoning/summaryTextDelta",
           params: {
@@ -473,6 +489,16 @@ lines.on("line", (line) => {
         } else {
           finish(plan);
         }
+        break;
+      }
+      case "turn/interrupt": {
+        const { threadId, turnId } = request.params;
+        const active = activeTurns.get(turnId);
+        if (active?.stall === "unresponsive") break;
+        clearInterval(active?.timer);
+        activeTurns.delete(turnId);
+        send({ id: request.id, result: {} });
+        send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "interrupted", items: [] } } });
         break;
       }
       default:

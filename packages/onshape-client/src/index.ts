@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   assemblyTransformFingerprint,
   parseFeatureJson,
@@ -675,7 +676,8 @@ async function exchange(config: OnshapeOAuthConfig, params: URLSearchParams): Pr
   const response = await fetch(config.tokenUrl ?? "https://oauth.onshape.com/oauth/token", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-    body: params
+    body: params,
+    signal: AbortSignal.timeout(15_000)
   });
   const body = await response.json().catch(() => null) as TokenResponse | null;
   if (
@@ -718,6 +720,7 @@ export interface OnshapeClientOptions {
   apiVersion?: string;
   frcDesignBaseUrl?: string;
   requestTimeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 export class OnshapeClient {
@@ -734,6 +737,8 @@ export class OnshapeClient {
   }
 
   private async request<T>(path: string, init: RequestInit = {}, retryAuth = true, rateLimitAttempt = 0): Promise<T> {
+    const cancel = this.options.signal;
+    cancel?.throwIfAborted();
     const accessToken = await this.options.accessToken();
     let response: Response;
     try {
@@ -747,9 +752,10 @@ export class OnshapeClient {
           ...init.headers
         },
         redirect: "follow",
-        signal: init.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal
+        signal: AbortSignal.any([timeoutSignal, ...(cancel ? [cancel] : []), ...(init.signal ? [init.signal] : [])])
       });
     } catch (error) {
+      cancel?.throwIfAborted();
       if (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name)) {
         throw new OnshapeApiError("Onshape API request timed out.", 504, null);
       }
@@ -765,6 +771,7 @@ export class OnshapeClient {
     const body = contentType.includes("json")
       ? await response.json().catch(() => null)
       : await response.text().catch(() => "");
+    cancel?.throwIfAborted();
     if (response.status === 429) {
       const retryAfterHeader = response.headers.get("retry-after");
       const retryAfterSeconds = retryAfterHeader === null
@@ -773,7 +780,7 @@ export class OnshapeClient {
           ? Number(retryAfterHeader)
           : Math.max(0, (Date.parse(retryAfterHeader) - Date.now()) / 1_000);
       if (rateLimitAttempt < 2 && Number.isFinite(retryAfterSeconds) && retryAfterSeconds <= 30) {
-        await new Promise((resolvePromise) => setTimeout(resolvePromise, Math.max(0, retryAfterSeconds) * 1_000));
+        await delay(Math.max(0, retryAfterSeconds) * 1_000, undefined, cancel ? { signal: cancel } : undefined);
         return this.request<T>(path, init, retryAuth, rateLimitAttempt + 1);
       }
       const remainingHeader = response.headers.get("x-rate-limit-remaining");
@@ -972,7 +979,9 @@ export class OnshapeClient {
     try {
       response = await fetch(
         `${this.frcDesignBaseUrl}/api/library/frc-design-lib?currentAccessLevel=user&cacheVersion=68`,
-        { headers: { accept: "application/json" }, signal: AbortSignal.timeout(Math.min(this.requestTimeoutMs, 30_000)) }
+        { headers: { accept: "application/json" }, signal: AbortSignal.any([
+          AbortSignal.timeout(Math.min(this.requestTimeoutMs, 30_000)), ...(this.options.signal ? [this.options.signal] : [])
+        ]) }
       );
     } catch (error) {
       if (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name)) {

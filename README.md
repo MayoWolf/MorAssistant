@@ -47,7 +47,7 @@ MorAssistant is a free, open-source **Onshape right-panel copilot** powered by C
 
 The composer defaults to **GPT‑6.2 Sol · High** and shows the models and reasoning levels available through your ChatGPT sign-in. Switch models between turns while staying in the same tab conversation. Attach a specific feature or instance with **+ CAD target** when your request refers to “this part” or “that extrude.”
 
-During a turn, the planner can look up an Onshape operation’s prerequisites and live feature specification or inspect a specific feature payload, assembly occurrence or mate. The review card shows exactly which edits are proposed and which model produced the turn.
+During a turn, the planner can look up an Onshape operation’s prerequisites and live feature specification or inspect a specific feature payload, assembly occurrence or mate. The panel shows elapsed time, the latest backend update and the token count for the latest model call when Codex reports it. **Stop planning** interrupts the turn. A request stops after four minutes or 90 seconds without Codex activity. The review card shows the proposed edits and which model produced the turn.
 
 ### What “Adam-like” means here
 
@@ -77,7 +77,7 @@ flowchart TD
   E --> C{"Onshape verification passes?"}
   C -->|"Yes · more work"| E
   C -->|"Yes · complete"| D["Native Onshape model updated"]
-  C -->|"No"| S["Stop immediately + prepare recovery plan"]
+  C -->|"No"| S["Stop and offer recovery"]
   S --> A
 ```
 

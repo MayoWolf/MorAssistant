@@ -21,6 +21,7 @@ import {
 } from "@morassistant/cad-command-schema";
 import {
   CodexWorkerPool,
+  PlanningStoppedError,
   type CodexRuntimeStatus,
   type PlanningProgress,
   type PlanningProgressCallback
@@ -42,7 +43,7 @@ import {
 } from "@morassistant/onshape-client";
 import {
   CODEX_EFFORTS, DEFAULT_CODEX_EFFORT, DEFAULT_CODEX_MODEL,
-  type CadTarget, type CodexModelOption, type OnshapeElementContext, type OnshapeElementType, type PartStudioContext
+  type CadTarget, type CodexModelOption, type OnshapeElementContext, type OnshapeElementType, type PartStudioContext, type PlanningJobStatus
 } from "@morassistant/shared-types";
 import { SessionStore, type UserSession } from "./session-store.js";
 
@@ -71,6 +72,8 @@ const envSchema = z.object({
   CODEX_COMMAND: z.string().default("codex"),
   CODEX_USERS_ROOT: z.string().default(resolve(repositoryRoot, "data/codex-users")),
   CODEX_MAX_WORKERS: z.coerce.number().int().min(1).max(100).default(4),
+  CAD_PLANNING_TIMEOUT_MS: z.coerce.number().int().min(100).max(8 * 60_000).default(4 * 60_000),
+  CAD_PLANNING_IDLE_MS: z.coerce.number().int().min(100).max(3 * 60_000).default(90_000),
   CODEX_IDLE_TIMEOUT_MS: z.coerce.number().int().min(11 * 60_000).max(3_600_000).default(15 * 60_000)
 });
 
@@ -105,9 +108,16 @@ const sessions = new Map<string, UserSession>();
 type PlanJob = {
   id: string;
   sessionId: string;
-  status: "planning" | "completed" | "failed";
+  contextKey: string;
+  prompt: string;
+  recovery: boolean;
+  controller: AbortController;
+  status: PlanningJobStatus;
   createdAt: number;
+  deadlineAt: number;
+  lastActivityAt: number;
   finishedAt?: number;
+  reportedTokens?: number;
   progress: PlanningProgress[];
   plan?: StoredCadPlan;
   error?: string;
@@ -115,9 +125,18 @@ type PlanJob = {
 const planJobs = new Map<string, PlanJob>();
 
 function updatePlanJobProgress(job: PlanJob, progress: PlanningProgress): void {
+  job.lastActivityAt = progress.at;
+  if (progress.reportedTokens !== undefined) {
+    job.reportedTokens = progress.reportedTokens;
+    return;
+  }
+  if (progress.activityOnly) return;
   const existing = job.progress.findIndex((item) => item.id === progress.id);
-  if (existing >= 0) job.progress[existing] = progress;
-  else job.progress.push(progress);
+  if (existing >= 0) {
+    if (job.progress[existing]?.message === progress.message) return;
+    job.progress.splice(existing, 1);
+  }
+  job.progress.push(progress);
   if (job.progress.length > 30) job.progress.splice(0, job.progress.length - 30);
 }
 const geometryCache = new Map<string, { createdAt: number; evidence: PartStudioGeometryEvidence }>();
@@ -387,10 +406,11 @@ async function createStoredAssemblyPlan(
   session: UserSession,
   body: PlanRequest,
   snapshotKey: string,
+  signal: AbortSignal,
   recoveryForPlanId?: string,
   onProgress?: PlanningProgressCallback
 ): Promise<StoredCadPlan> {
-  const client = clientFor(session, body.context);
+  const client = clientFor(session, body.context, signal);
   const storedSnapshot = session.assemblySnapshots.get(snapshotKey);
   let usedStoredSnapshot = false;
   let rateLimitFallback = false;
@@ -434,7 +454,11 @@ async function createStoredAssemblyPlan(
     ]
   };
   const { threadKey, options } = planningConversation(session, snapshotKey, body, assemblyTargets(inspection));
-  const planning = await workers.forUser(session.id).createPlan(body.prompt, inspection, onProgress, options);
+  signal.throwIfAborted();
+  const planning = await workers.forUser(session.id).createPlan(body.prompt, inspection, onProgress, {
+    ...options, signal, inactivityTimeoutMs: env.CAD_PLANNING_IDLE_MS
+  });
+  signal.throwIfAborted();
   session.codexThreads.set(threadKey, planning.threadId);
   const plan = cadPlanSchema.parse(planning.plan);
   validatePlanAgainstAssembly(plan, inspection);
@@ -484,13 +508,14 @@ const activePlanningSessions = new Set<string>();
 async function createStoredPlan(
   session: UserSession,
   body: PlanRequest,
+  signal: AbortSignal,
   recoveryForPlanId?: string,
   onProgress?: PlanningProgressCallback
 ): Promise<StoredCadPlan> {
   if (activePlanningSessions.has(session.id)) throw new HttpError(409, "A CAD turn is already running.");
   activePlanningSessions.add(session.id);
   try {
-    return await planFromWorkspace(session, body, recoveryForPlanId, onProgress);
+    return await planFromWorkspace(session, body, signal, recoveryForPlanId, onProgress);
   } finally {
     activePlanningSessions.delete(session.id);
   }
@@ -499,15 +524,16 @@ async function createStoredPlan(
 async function planFromWorkspace(
   session: UserSession,
   body: PlanRequest,
+  signal: AbortSignal,
   recoveryForPlanId?: string,
   onProgress?: PlanningProgressCallback
 ): Promise<StoredCadPlan> {
-  const client = clientFor(session, body.context);
-  const resolvedContext = await resolveElementContext(session, body.context);
+  const client = clientFor(session, body.context, signal);
+  const resolvedContext = await resolveElementContext(session, body.context, signal);
   body = { ...body, context: resolvedContext };
   const snapshotKey = elementContextKey(body.context);
   if (body.context.elementType === "ASSEMBLY") {
-    return createStoredAssemblyPlan(session, body, snapshotKey, recoveryForPlanId, onProgress);
+    return createStoredAssemblyPlan(session, body, snapshotKey, signal, recoveryForPlanId, onProgress);
   }
   const storedSnapshot = session.partStudioSnapshots.get(snapshotKey);
   let usedStoredSnapshot = false;
@@ -566,7 +592,11 @@ async function planFromWorkspace(
     storePartStudioSnapshot(session, snapshotKey, featureTree, geometryEvidence(rawInspection));
   }
   const { threadKey, options } = planningConversation(session, snapshotKey, body, partStudioTargets(featureTree));
-  const planning = await workers.forUser(session.id).createPlan(body.prompt, inspection, onProgress, options);
+  signal.throwIfAborted();
+  const planning = await workers.forUser(session.id).createPlan(body.prompt, inspection, onProgress, {
+    ...options, signal, inactivityTimeoutMs: env.CAD_PLANNING_IDLE_MS
+  });
+  signal.throwIfAborted();
   session.codexThreads.set(threadKey, planning.threadId);
   const plan = cadPlanSchema.parse(planning.plan);
   validatePlanAgainstIntent(body.prompt, validatePlanAgainstFeatureTree(plan, featuresWithHashes(featureTree.features)));
@@ -613,24 +643,9 @@ async function planFromWorkspace(
 }
 
 function prunePlanJobs(): void {
-  const now = Date.now();
-  const planningCutoff = now - 9 * 60_000;
-  const retentionCutoff = now - 15 * 60_000;
+  const retentionCutoff = Date.now() - 15 * 60_000;
   for (const [id, job] of planJobs) {
-    if (job.status === "planning" && job.createdAt < planningCutoff) {
-      workers.stopForUser(job.sessionId);
-      job.status = "failed";
-      job.finishedAt = now;
-      job.error = "CAD planning exceeded the safe execution window and was stopped. Try the request again.";
-      updatePlanJobProgress(job, {
-        id: "timeout",
-        kind: "validation",
-        message: "Planning stopped after exceeding the safe execution window.",
-        at: now
-      });
-      continue;
-    }
-    if (job.status !== "planning" && (job.finishedAt ?? job.createdAt) < retentionCutoff) planJobs.delete(id);
+    if (job.finishedAt && job.finishedAt < retentionCutoff) planJobs.delete(id);
   }
 }
 
@@ -642,6 +657,68 @@ function planJobError(error: unknown): string {
   }
   if (error instanceof Error) return error.message;
   return "Could not create a CAD plan.";
+}
+
+function jobStatus(job: PlanJob) {
+  return {
+    id: job.id, status: job.status, progress: job.progress, prompt: job.prompt, recovery: job.recovery,
+    createdAt: job.createdAt, deadlineAt: job.deadlineAt, lastActivityAt: job.lastActivityAt,
+    ...(job.finishedAt !== undefined ? { finishedAt: job.finishedAt } : {}),
+    ...(job.reportedTokens !== undefined ? { reportedTokens: job.reportedTokens } : {}),
+    ...(job.plan ? { plan: job.plan } : {}),
+    ...(job.error ? { error: job.error } : {})
+  };
+}
+
+function planningTimeLimit(): PlanningStoppedError {
+  return new PlanningStoppedError("timed_out", `Planning reached its ${Math.ceil(env.CAD_PLANNING_TIMEOUT_MS / 1_000)}-second limit.`);
+}
+
+function stopPlanJob(job: PlanJob, reason: PlanningStoppedError): void {
+  if (job.status !== "planning") return;
+  job.status = "stopping";
+  job.controller.abort(reason);
+}
+
+function startPlanJob(session: UserSession, body: PlanRequest, request: FastifyRequest, recoveryForPlanId?: string): PlanJob {
+  const now = Date.now();
+  const job: PlanJob = {
+    id: randomUUID(),
+    sessionId: session.id,
+    contextKey: elementContextKey(body.context),
+    prompt: recoveryForPlanId ? "Recover from the stopped execution." : body.prompt,
+    recovery: Boolean(recoveryForPlanId),
+    controller: new AbortController(),
+    status: "planning",
+    createdAt: now,
+    lastActivityAt: now,
+    deadlineAt: now + env.CAD_PLANNING_TIMEOUT_MS,
+    progress: [{ id: "inspection", kind: "inspection", message: recoveryForPlanId
+      ? "Re-reading the changed Onshape model for recovery."
+      : "Reading the current Onshape model and live feature catalog.", at: now }]
+  };
+  planJobs.set(job.id, job);
+  const timer = setTimeout(() => stopPlanJob(job, planningTimeLimit()), env.CAD_PLANNING_TIMEOUT_MS);
+  timer.unref();
+  void createStoredPlan(session, body, job.controller.signal, recoveryForPlanId, (progress) => updatePlanJobProgress(job, progress))
+    .then((plan) => {
+      job.status = "completed";
+      job.plan = plan;
+    }).catch((error) => {
+      const stopped = error instanceof PlanningStoppedError ? error : job.controller.signal.reason;
+      if (stopped instanceof PlanningStoppedError) {
+        job.status = stopped.status;
+        job.error = stopped.message;
+      } else {
+        job.status = "failed";
+        job.error = planJobError(error);
+        request.log.error(logError(error), "Background plan creation failed");
+      }
+    }).finally(() => {
+      clearTimeout(timer);
+      job.finishedAt = Date.now();
+    });
+  return job;
 }
 
 function recoveryPrompt(plan: StoredCadPlan): string {
@@ -885,8 +962,10 @@ async function refreshSessionTokens(session: UserSession): Promise<OnshapeTokens
         return tokens;
       })
       .catch((error) => {
-        delete session.onshapeTokens;
-        saveSession(session);
+        if (error instanceof OnshapeApiError && (error.status === 400 || error.status === 401)) {
+          delete session.onshapeTokens;
+          saveSession(session);
+        }
         throw error;
       })
       .finally(() => delete session.onshapeRefresh);
@@ -894,7 +973,7 @@ async function refreshSessionTokens(session: UserSession): Promise<OnshapeTokens
   return session.onshapeRefresh;
 }
 
-function clientFor(session: UserSession, context?: OnshapeElementContext): OnshapeClient {
+function clientFor(session: UserSession, context?: OnshapeElementContext, signal?: AbortSignal): OnshapeClient {
   if (!session.onshapeTokens) throw new Error("Onshape access is not available for this installed extension.");
   return new OnshapeClient({
     accessToken: async () => {
@@ -904,7 +983,8 @@ function clientFor(session: UserSession, context?: OnshapeElementContext): Onsha
     refreshAccessToken: async () => (await refreshSessionTokens(session)).accessToken,
     baseUrl: context?.server ?? env.ONSHAPE_BASE_URL,
     apiVersion: env.ONSHAPE_API_VERSION,
-    frcDesignBaseUrl: env.FRC_DESIGN_BASE_URL
+    frcDesignBaseUrl: env.FRC_DESIGN_BASE_URL,
+    ...(signal ? { signal } : {})
   });
 }
 
@@ -959,7 +1039,8 @@ const elementInfoCache = new Map<string, { capturedAt: number; elementType: Onsh
 
 async function resolveElementContext(
   session: UserSession,
-  context: OnshapeElementContext
+  context: OnshapeElementContext,
+  signal?: AbortSignal
 ): Promise<OnshapeElementContext> {
   if (context.elementType) return context;
   const cacheKey = elementContextKey(context);
@@ -967,7 +1048,7 @@ async function resolveElementContext(
   if (cached && Date.now() - cached.capturedAt < 10 * 60_000) {
     return { ...context, elementType: cached.elementType };
   }
-  const info = await clientFor(session, context).getElementInfo(context);
+  const info = await clientFor(session, context, signal).getElementInfo(context);
   if (info.elementType !== "PARTSTUDIO" && info.elementType !== "ASSEMBLY") {
     throw new HttpError(400, `MorAssistant supports Part Studio and Assembly tabs; this tab is ${info.elementType}.`);
   }
@@ -1245,9 +1326,18 @@ app.get("/api/context/targets", async (request, reply) => {
 
 app.post("/api/plans", async (request, reply) => {
   const session = getSession(request, reply);
-  const stored = await createStoredPlan(session, parsePlanRequest(request.body));
-  reply.code(201);
-  return stored;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(planningTimeLimit()), env.CAD_PLANNING_TIMEOUT_MS);
+  try {
+    const stored = await createStoredPlan(session, parsePlanRequest(request.body), controller.signal);
+    reply.code(201);
+    return stored;
+  } catch (error) {
+    if (error instanceof PlanningStoppedError) return reply.code(504).send({ error: error.message });
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 });
 
 app.post("/api/plan-jobs", async (request, reply) => {
@@ -1258,29 +1348,17 @@ app.post("/api/plan-jobs", async (request, reply) => {
     return reply.code(409).send({ error: "A CAD plan is already being created for this session." });
   }
 
-  const job: PlanJob = {
-    id: randomUUID(),
-    sessionId: session.id,
-    status: "planning",
-    createdAt: Date.now(),
-    progress: [{ id: "inspection", kind: "inspection", message: "Reading the current Onshape model and live feature catalog.", at: Date.now() }]
-  };
-  planJobs.set(job.id, job);
-  void createStoredPlan(session, body, undefined, (progress) => updatePlanJobProgress(job, progress)).then((plan) => {
-    if (job.status !== "planning") return;
-    job.status = "completed";
-    job.finishedAt = Date.now();
-    job.plan = plan;
-  }).catch((error) => {
-    if (job.status !== "planning") return;
-    job.status = "failed";
-    job.finishedAt = Date.now();
-    job.error = planJobError(error);
-    request.log.error(logError(error), "Background plan creation failed");
-  });
-
   reply.code(202);
-  return { id: job.id, status: job.status, progress: job.progress };
+  return jobStatus(startPlanJob(session, body, request));
+});
+
+app.get("/api/plan-jobs/latest", async (request, reply) => {
+  const session = getSession(request, reply);
+  prunePlanJobs();
+  const contextKey = elementContextKey(parseContext(request.query));
+  const job = [...planJobs.values()].reverse().find((candidate) => candidate.sessionId === session.id
+    && candidate.contextKey === contextKey);
+  return { job: job ? jobStatus(job) : null };
 });
 
 app.get("/api/plan-jobs/:id", async (request, reply) => {
@@ -1289,9 +1367,16 @@ app.get("/api/plan-jobs/:id", async (request, reply) => {
   prunePlanJobs();
   const job = planJobs.get(id);
   if (!job || job.sessionId !== session.id) return reply.code(404).send({ error: "Plan request not found." });
-  if (job.status === "completed") return { id: job.id, status: job.status, progress: job.progress, plan: job.plan };
-  if (job.status === "failed") return { id: job.id, status: job.status, progress: job.progress, error: job.error };
-  return { id: job.id, status: job.status, progress: job.progress };
+  return jobStatus(job);
+});
+
+app.post("/api/plan-jobs/:id/cancel", async (request, reply) => {
+  const session = getSession(request, reply);
+  const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+  const job = planJobs.get(id);
+  if (!job || job.sessionId !== session.id) return reply.code(404).send({ error: "Plan request not found." });
+  stopPlanJob(job, new PlanningStoppedError("cancelled", "You stopped this request."));
+  return jobStatus(job);
 });
 
 app.post("/api/plans/:id/recovery-jobs", async (request, reply) => {
@@ -1308,36 +1393,12 @@ app.post("/api/plans/:id/recovery-jobs", async (request, reply) => {
   if (activePlanningSessions.has(session.id)) {
     return reply.code(409).send({ error: "A CAD plan is already being created for this session." });
   }
-  const job: PlanJob = {
-    id: randomUUID(),
-    sessionId: session.id,
-    status: "planning",
-    createdAt: Date.now(),
-    progress: [{ id: "inspection", kind: "inspection", message: "Re-reading the changed Onshape model for recovery.", at: Date.now() }]
-  };
-  planJobs.set(job.id, job);
   const runtime = failedPlan.agentTrace?.runtime;
   const effort = CODEX_EFFORTS.find((candidate) => candidate === runtime?.reasoningEffort);
-  void createStoredPlan(
-    session,
-    { prompt: recoveryPrompt(failedPlan), context: failedPlan.context,
-      ...(runtime?.model ? { model: runtime.model } : {}), ...(effort ? { effort } : {}) },
-    failedPlan.id,
-    (progress) => updatePlanJobProgress(job, progress)
-  ).then((plan) => {
-    if (job.status !== "planning") return;
-    job.status = "completed";
-    job.finishedAt = Date.now();
-    job.plan = plan;
-  }).catch((error) => {
-    if (job.status !== "planning") return;
-    job.status = "failed";
-    job.finishedAt = Date.now();
-    job.error = planJobError(error);
-    request.log.error(logError(error), "Background recovery planning failed");
-  });
   reply.code(202);
-  return { id: job.id, status: job.status, progress: job.progress };
+  return jobStatus(startPlanJob(session, { prompt: recoveryPrompt(failedPlan), context: failedPlan.context,
+    ...(runtime?.model ? { model: runtime.model } : {}), ...(effort ? { effort } : {})
+  }, request, failedPlan.id));
 });
 
 app.post("/api/plans/:id/apply", async (request, reply) => {

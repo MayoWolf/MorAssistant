@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type
 import type { StoredCadPlan } from "@morassistant/cad-command-schema";
 import {
   DEFAULT_CODEX_EFFORT, DEFAULT_CODEX_MODEL,
-  type CadTarget, type CodexEffort, type ConnectionStatus, type DeviceCodeLogin, type OnshapeElementContext, type OnshapeElementType
+  type CadTarget, type CodexEffort, type ConnectionStatus, type DeviceCodeLogin, type OnshapeElementContext, type OnshapeElementType,
+  type PlanningJobStatus, type PlanningProgress
 } from "@morassistant/shared-types";
 
 const emptyStatus: ConnectionStatus = { onshape: "disconnected", codex: "disconnected" };
@@ -42,17 +43,20 @@ function installationTokenFromLaunch(): string | null {
 
 const installationToken = installationTokenFromLaunch();
 
-type PlanningProgress = {
+type PlanJobResponse = {
   id: string;
-  kind: "inspection" | "reasoning" | "research" | "validation";
-  message: string;
-  at: number;
+  status: PlanningJobStatus;
+  progress?: PlanningProgress[];
+  prompt?: string;
+  recovery?: boolean;
+  createdAt?: number;
+  lastActivityAt?: number;
+  deadlineAt?: number;
+  finishedAt?: number;
+  reportedTokens?: number;
+  plan?: StoredCadPlan;
+  error?: string;
 };
-
-type PlanJobResponse =
-  | { id: string; status: "planning"; progress?: PlanningProgress[] }
-  | { id: string; status: "completed"; progress?: PlanningProgress[]; plan: StoredCadPlan }
-  | { id: string; status: "failed"; progress?: PlanningProgress[]; error: string };
 
 type ConversationResponse = {
   plans: StoredCadPlan[];
@@ -105,6 +109,10 @@ function contextQuery(context: OnshapeElementContext): string {
   return params.toString();
 }
 
+class ApiRequestError extends Error {
+  constructor(readonly status: number, message: string) { super(message); }
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${apiOrigin}${path}`, {
     ...init,
@@ -116,23 +124,46 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     }
   });
   const body = await response.json().catch(() => ({ error: `Request failed (${response.status}).` })) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status}).`);
+  if (!response.ok) throw new ApiRequestError(response.status, body.error ?? `Request failed (${response.status}).`);
   return body;
 }
 
+function isRunning(status: PlanningJobStatus): boolean {
+  return status === "planning" || status === "stopping";
+}
+
 async function waitForPlan(
-  jobId: string,
-  onProgress: (progress: PlanningProgress[]) => void
-): Promise<StoredCadPlan> {
-  const deadline = Date.now() + 10 * 60_000;
-  while (Date.now() < deadline) {
+  initial: PlanJobResponse,
+  onUpdate: (job: PlanJobResponse) => void,
+  onConnectionChange: (connected: boolean) => void,
+  signal: AbortSignal
+): Promise<PlanJobResponse> {
+  const allowance = (initial.deadlineAt && initial.createdAt ? initial.deadlineAt - initial.createdAt : 4 * 60_000) + 20_000;
+  const deadline = Date.now() + allowance;
+  let job = initial;
+  onUpdate(job);
+  while (isRunning(job.status)) {
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_000));
-    const job = await api<PlanJobResponse>(`/api/plan-jobs/${jobId}`);
-    onProgress(job.progress ?? []);
-    if (job.status === "completed") return job.plan;
-    if (job.status === "failed") throw new Error(job.error);
+    signal.throwIfAborted();
+    try {
+      job = await api<PlanJobResponse>(`/api/plan-jobs/${initial.id}`, {
+        signal: AbortSignal.any([signal, AbortSignal.timeout(7_000)])
+      });
+      onConnectionChange(true);
+      onUpdate(job);
+    } catch (error) {
+      signal.throwIfAborted();
+      if (error instanceof ApiRequestError && error.status === 404) {
+        throw new Error("This run is unavailable. The backend may have restarted. Your draft is ready to retry.");
+      }
+      if (error instanceof ApiRequestError && error.status < 500 && error.status !== 429) throw error;
+      onConnectionChange(false);
+    }
+    if (isRunning(job.status) && Date.now() >= deadline) {
+      throw new Error("The panel could not confirm the run’s final status. Reopen it to check the backend.");
+    }
   }
-  throw new Error("Codex planning timed out. Try the request again.");
+  return job;
 }
 
 function BrandMark() {
@@ -146,19 +177,60 @@ function ConnectionPill({ label, state }: { label: string; state: string }) {
   return <span className={`connection-pill ${state}`}><i aria-hidden="true" />{label}</span>;
 }
 
-function LiveActivity({ progress, label }: { progress: PlanningProgress[]; label: string }) {
-  const visible = progress.length > 0 ? progress : [{
-    id: "starting",
-    kind: "inspection" as const,
-    message: "Reading the current Onshape tab.",
-    at: Date.now()
-  }];
-  return <section className="live-activity" aria-label={label} aria-live="polite">
-    <div className="activity-heading"><span className="live-dot" /><strong>{label}</strong></div>
-    <ol>{visible.map((item) => <li key={item.id} className={item.kind}>
-      <span>{item.kind === "research" ? "⌕" : item.kind === "validation" ? "✓" : item.kind === "reasoning" ? "◇" : "↻"}</span>
-      <p>{item.message}</p>
-    </li>)}</ol>
+function formatDuration(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1_000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function LiveActivity({ job, startedAt, reconnecting, stopPending, onStop }: {
+  job: PlanJobResponse | null;
+  startedAt: number;
+  reconnecting: boolean;
+  stopPending: boolean;
+  onStop?: () => void;
+}) {
+  const [now, setNow] = useState(Date.now);
+  const running = !job || isRunning(job.status);
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(timer);
+  }, [running]);
+  const progress = job?.progress ?? [];
+  const started = job?.createdAt ?? startedAt;
+  const duration = (job?.finishedAt ?? now) - started;
+  const silence = now - (job?.lastActivityAt ?? started);
+  const stopping = stopPending || job?.status === "stopping";
+  const label = reconnecting ? "Reconnecting to the backend" : stopping ? "Stopping request"
+    : job?.status === "completed" ? "Planning complete"
+    : job?.status === "timed_out" ? "Request timed out"
+    : job?.status === "cancelled" ? "Request stopped"
+    : job?.status === "failed" ? "Request failed"
+    : silence >= 25_000 ? "Waiting for an update"
+    : job?.recovery ? "Preparing a recovery plan" : "Preparing your answer or preview";
+  const latest = progress.at(-1);
+  return <section className="live-activity" aria-label="Planning activity">
+    <div className="activity-heading">
+      <span className={running ? "live-dot" : "ended-dot"} aria-hidden="true" />
+      <strong role="status">{label}</strong>
+      {running && onStop && <button type="button" className="secondary-button stop-button" onClick={onStop} disabled={stopping}>Stop</button>}
+    </div>
+    <div className="activity-metrics">
+      <span>{formatDuration(duration)} elapsed{job?.deadlineAt ? ` · ${formatDuration(job.deadlineAt - started)} limit` : ""}</span>
+      {running && <span>Last update {formatDuration(silence)} ago</span>}
+      <span>{job?.reportedTokens !== undefined
+        ? `${job.reportedTokens.toLocaleString()} tokens · latest reported model call`
+        : "Token count unavailable so far"}</span>
+    </div>
+    {job?.error && <p className="activity-error">{job.error}</p>}
+    {latest && <p className="latest-activity">{latest.message}</p>}
+    <p className="activity-note">{job?.recovery ? "Recovery planning makes no additional CAD edits." : "Planning only. CAD edits require approval."}</p>
+    {progress.length > 1 && <details className="turn-details">
+      <summary>Activity log</summary>
+      <ol>{progress.map((item) => <li key={item.id}>
+        <span>{formatDuration(item.at - started)}</span><p>{item.message}</p>
+      </li>)}</ol>
+    </details>}
   </section>;
 }
 
@@ -220,12 +292,14 @@ function PlanCard({
   plan,
   busy,
   activePlanId,
-  onApply
+  onApply,
+  onRecover
 }: {
   plan: StoredCadPlan;
   busy: BusyState;
   activePlanId: string | null;
   onApply: (plan: StoredCadPlan) => void;
+  onRecover: (plan: StoredCadPlan) => void;
 }) {
   const hasOperations = plan.operations.length > 0;
   return <section className={`plan ${plan.status}`}>
@@ -255,6 +329,8 @@ function PlanCard({
     {hasOperations && <div className="approval-bar">
       <div><strong>{plan.status === "pending" ? "Ready for review" : plan.status === "applying" ? "Applying changes" : plan.status === "applied" ? "Changes applied" : "Execution stopped"}</strong><small>{plan.status === "pending" ? `${plan.operations.length} proposed change${plan.operations.length === 1 ? "" : "s"}` : `${plan.result?.operations.filter((item) => item.status === "applied").length ?? 0} applied`}</small></div>
       {hasOperations && plan.status === "pending" && <button className="apply-button" onClick={() => onApply(plan)} disabled={busy !== null}>{busy === "applying" && activePlanId === plan.id ? "Applying…" : "Approve & apply"}</button>}
+      {plan.status === "failed" && plan.result && !plan.recoveryForPlanId && <button className="secondary-button"
+        onClick={() => onRecover(plan)} disabled={busy !== null}>Prepare recovery</button>}
     </div>}
     {plan.agentTrace && <details className="turn-details">
       <summary>Inspection details</summary>
@@ -272,13 +348,15 @@ function ConversationTurn({
   latest,
   busy,
   activePlanId,
-  onApply
+  onApply,
+  onRecover
 }: {
   plan: StoredCadPlan;
   latest: boolean;
   busy: BusyState;
   activePlanId: string | null;
   onApply: (plan: StoredCadPlan) => void;
+  onRecover: (plan: StoredCadPlan) => void;
 }) {
   const prompt = plan.recoveryForPlanId ? "Recover from the stopped execution." : plan.prompt;
   return <article className="chat-turn">
@@ -287,10 +365,10 @@ function ConversationTurn({
       <div className="assistant-label"><BrandMark /><strong>MorAssistant</strong>
         {plan.agentTrace?.runtime && <small>{modelLabel(plan.agentTrace.runtime.model)}{plan.agentTrace.runtime.reasoningEffort ? ` · ${effortLabels[plan.agentTrace.runtime.reasoningEffort as CodexEffort] ?? plan.agentTrace.runtime.reasoningEffort}` : ""}</small>}
       </div>
-      {latest ? <PlanCard plan={plan} busy={busy} activePlanId={activePlanId} onApply={onApply} /> :
+      {latest ? <PlanCard plan={plan} busy={busy} activePlanId={activePlanId} onApply={onApply} onRecover={onRecover} /> :
         <details className="past-turn">
           <summary><span>{plan.message ?? plan.summary}</span><small>{plan.operations.length === 0 ? "Answer" : `${plan.operations.length} operation${plan.operations.length === 1 ? "" : "s"}`} · {plan.status}</small></summary>
-          <PlanCard plan={plan} busy={busy} activePlanId={activePlanId} onApply={onApply} />
+          <PlanCard plan={plan} busy={busy} activePlanId={activePlanId} onApply={onApply} onRecover={onRecover} />
         </details>}
     </div>
   </article>;
@@ -314,10 +392,13 @@ export function App() {
   const [hasPersistentContext, setHasPersistentContext] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
-  const [activity, setActivity] = useState<PlanningProgress[]>([]);
+  const [startedAt, setStartedAt] = useState(0);
+  const [run, setRun] = useState<PlanJobResponse | null>(null);
+  const [jobReport, setJobReport] = useState<PlanJobResponse | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [stopPending, setStopPending] = useState(false);
   const [busy, setBusy] = useState<BusyState>(null);
   const [activePlanId, setActivePlanId] = useState<string | null>(null);
-  const [recoveryMessage, setRecoveryMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const conversationEnd = useRef<HTMLDivElement | null>(null);
@@ -363,11 +444,33 @@ export function App() {
   useEffect(() => {
     if (!context || !contextName) return;
     let active = true;
-    void api<ConversationResponse>(`/api/conversation?${contextQuery(context)}`).then((conversation) => {
+    const query = contextQuery(context);
+    void Promise.all([
+      api<ConversationResponse>(`/api/conversation?${query}`),
+      api<{ job: PlanJobResponse | null }>(`/api/plan-jobs/latest?${query}`, { signal: AbortSignal.timeout(7_000) })
+        .catch(() => ({ job: null }))
+    ]).then(([conversation, activeRun]) => {
       if (!active) return;
       setHistory(conversation.plans);
       setHasPersistentContext(conversation.hasPersistentContext);
       setHistoryLoaded(true);
+      const recent = activeRun.job;
+      if (!recent) return;
+      if (isRunning(recent.status)) {
+        setBusy(recent.recovery ? "recovering" : "planning");
+        setPendingPrompt(recent.prompt ?? "Resumed planning request.");
+        setStartedAt(recent.createdAt ?? Date.now());
+        setRun(recent);
+      } else {
+        setJobReport(recent);
+        if (recent.plan && !conversation.plans.some((plan) => plan.id === recent.plan?.id)) {
+          setHistory([...conversation.plans, recent.plan]);
+          setHasPersistentContext(true);
+        }
+        if (recent.status !== "completed" && recent.prompt && !recent.recovery) {
+          setPrompt((current) => current || recent.prompt!);
+        }
+      }
     }).catch((cause) => {
       if (!active) return;
       setError(cause instanceof Error ? cause.message : "Could not load the conversation.");
@@ -378,13 +481,56 @@ export function App() {
 
   useEffect(() => {
     conversationEnd.current?.scrollIntoView({ block: "nearest" });
-  }, [history.length, pendingPrompt, activity]);
+  }, [history.length, pendingPrompt]);
 
-  const upsertPlan = (nextPlan: StoredCadPlan) => {
+  const upsertPlan = useCallback((nextPlan: StoredCadPlan) => {
     setHistory((current) => {
       const withoutPlan = current.filter((item) => item.id !== nextPlan.id);
       return [...withoutPlan, nextPlan].sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
     });
+  }, []);
+
+  useEffect(() => {
+    if (!run) return;
+    const controller = new AbortController();
+    void waitForPlan(run, setJobReport, (connected) => setReconnecting(!connected), controller.signal).then((terminal) => {
+      if (controller.signal.aborted) return;
+      if (terminal.status === "completed" && terminal.plan) {
+        upsertPlan(terminal.plan);
+        setHasPersistentContext(true);
+        if (!run.recovery) {
+          setTargets([]);
+          setChoices(null);
+        }
+      } else if (!run.recovery && run.prompt) {
+        setPrompt((current) => current || run.prompt!);
+      }
+    }).catch((cause) => {
+      if (controller.signal.aborted) return;
+      setError(cause instanceof Error ? cause.message : "Could not check the run.");
+      if (!run.recovery && run.prompt) setPrompt((current) => current || run.prompt!);
+    }).finally(() => {
+      if (controller.signal.aborted) return;
+      setRun(null);
+      setPendingPrompt(null);
+      setStopPending(false);
+      setReconnecting(false);
+      setBusy(null);
+    });
+    return () => controller.abort();
+  }, [run, upsertPlan]);
+
+  const stopRun = async () => {
+    if (!run || stopPending) return;
+    setStopPending(true);
+    try {
+      await api<PlanJobResponse>(`/api/plan-jobs/${run.id}/cancel`, {
+        method: "POST", signal: AbortSignal.timeout(10_000)
+      });
+    } catch {
+      setStopPending(false);
+      setError("Could not confirm the Stop request. Check the connection and try again.");
+    }
   };
 
   const connectCodex = async () => {
@@ -420,22 +566,22 @@ export function App() {
     event.preventDefault();
     if (!context || !ready || busy || prompt.trim().length < 3) return;
     const submittedPrompt = prompt.trim();
-    setBusy("planning"); setError(null); setRecoveryMessage(null); setActivity([]); setPendingPrompt(submittedPrompt); setPrompt("");
+    setBusy("planning");
+    setError(null);
+    setJobReport(null);
+    setStartedAt(Date.now());
+    setPendingPrompt(submittedPrompt);
+    setPrompt("");
     try {
       const job = await api<PlanJobResponse>("/api/plan-jobs", {
         method: "POST",
-        body: JSON.stringify({ prompt: submittedPrompt, context, model, effort, targetIds: targets.map((target) => target.id) })
+        body: JSON.stringify({ prompt: submittedPrompt, context, model, effort, targetIds: targets.map((target) => target.id) }),
+        signal: AbortSignal.timeout(10_000)
       });
-      setActivity(job.progress ?? []);
-      const completedPlan = job.status === "completed" ? job.plan : await waitForPlan(job.id, setActivity);
-      upsertPlan(completedPlan);
-      setHasPersistentContext(true);
-      setTargets([]);
-      setChoices(null);
+      setRun({ ...job, prompt: submittedPrompt });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not create a plan.");
       setPrompt((current) => current || submittedPrompt);
-    } finally {
       setPendingPrompt(null);
       setBusy(null);
     }
@@ -446,27 +592,29 @@ export function App() {
     try {
       const applied = await api<StoredCadPlan>(`/api/plans/${plan.id}/apply`, { method: "POST" });
       upsertPlan(applied);
-      if (applied.status === "failed" && !applied.recoveryForPlanId) {
-        setBusy("recovering");
-        setPendingPrompt("Recover from the stopped execution.");
-        setActivity([]);
-        const job = await api<PlanJobResponse>(`/api/plans/${applied.id}/recovery-jobs`, { method: "POST" });
-        setActivity(job.progress ?? []);
-        const recovery = job.status === "completed" ? job.plan : await waitForPlan(job.id, setActivity);
-        upsertPlan(recovery);
-        const appliedCount = applied.result?.operations.filter((item) => item.status === "applied").length ?? 0;
-        const stoppedAt = applied.result?.operations.find((item) => item.status === "failed" || item.verification !== "passed");
-        setRecoveryMessage([
-          `Execution stopped after ${appliedCount} operation${appliedCount === 1 ? "" : "s"} applied.`,
-          stoppedAt ? `Stopped at operation ${stoppedAt.index + 1}: ${stoppedAt.message}` : undefined,
-          "A recovery plan is ready for review."
-        ].filter(Boolean).join(" "));
-      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not apply the plan.");
     } finally {
       setPendingPrompt(null);
       setActivePlanId(null);
+      setBusy(null);
+    }
+  };
+
+  const recoverPlan = async (plan: StoredCadPlan) => {
+    setBusy("recovering");
+    setError(null);
+    setStartedAt(Date.now());
+    setJobReport(null);
+    setPendingPrompt("Recover from the stopped execution.");
+    try {
+      const job = await api<PlanJobResponse>(`/api/plans/${plan.id}/recovery-jobs`, {
+        method: "POST", signal: AbortSignal.timeout(10_000)
+      });
+      setRun({ ...job, recovery: true });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not start recovery.");
+      setPendingPrompt(null);
       setBusy(null);
     }
   };
@@ -538,7 +686,6 @@ export function App() {
       <button className="secondary-button" type="button" onClick={() => void refreshStatus()}>Retry connection</button>
     </section>}
     {error && <section className="notice error" role="alert"><p>{error}</p><button className="secondary-button" type="button" onClick={() => setError(null)}>Dismiss</button></section>}
-    {recoveryMessage && <section className="notice recovery"><strong>Recovery plan ready</strong><p>{recoveryMessage}</p></section>}
       {context && connected && !historyLoaded && !error && <p className="loading-copy" role="status">Loading this tab’s conversation…</p>}
       {connected && historyLoaded && history.length === 0 && !pendingPrompt && <div className="chat-empty">
         <div className="empty-mark"><BrandMark /></div>
@@ -556,12 +703,18 @@ export function App() {
         busy={busy}
         activePlanId={activePlanId}
         onApply={(candidate) => void applyPlan(candidate)}
+        onRecover={(candidate) => void recoverPlan(candidate)}
       />)}
-      {pendingPrompt && <article className="chat-turn pending-turn">
-        <div className="user-message"><span>You</span><p>{pendingPrompt}</p></div>
+      {jobReport?.status === "completed" && jobReport.plan?.id === history.at(-1)?.id && <details className="turn-details completed-activity">
+        <summary>Planning time and token activity</summary>
+        <LiveActivity job={jobReport} startedAt={startedAt} reconnecting={false} stopPending={false} />
+      </details>}
+      {(pendingPrompt || (jobReport && !isRunning(jobReport.status) && jobReport.status !== "completed")) && <article className="chat-turn pending-turn">
+        <div className="user-message"><span>You</span><p>{pendingPrompt ?? jobReport?.prompt ?? "Planning request"}</p></div>
         <div className="assistant-message">
           <div className="assistant-label"><BrandMark /><strong>MorAssistant</strong></div>
-          <LiveActivity progress={activity} label={busy === "recovering" ? "Preparing a recovery plan" : "Working on your request"} />
+          <LiveActivity job={jobReport ?? run} startedAt={startedAt} reconnecting={reconnecting}
+            stopPending={stopPending} {...(run ? { onStop: () => void stopRun() } : {})} />
         </div>
       </article>}
       <div ref={conversationEnd} />
@@ -625,9 +778,11 @@ export function App() {
             onClick={() => choices ? setChoices(null) : void loadTargets()}>
             {loadingTargets ? "Loading targets…" : choices ? "Close targets" : "+ CAD target"}
           </button>
-          <button className="send-button" type="submit" title="Send (⌘/Ctrl + Enter)" disabled={!ready || prompt.trim().length < 3 || busy !== null}>
-            {busy === "planning" ? "Working…" : "Send"}<span aria-hidden="true">↑</span>
-          </button>
+          {run ? <button className="secondary-button" type="button" onClick={() => void stopRun()}
+            disabled={stopPending || jobReport?.status === "stopping"}>{stopPending || jobReport?.status === "stopping" ? "Stopping…" : "Stop planning"}</button>
+            : <button className="send-button" type="submit" title="Send (⌘/Ctrl + Enter)" disabled={!ready || prompt.trim().length < 3 || busy !== null}>
+              {busy === "planning" ? "Starting…" : "Send"}<span aria-hidden="true">↑</span>
+            </button>}
         </div>
       </form>
     </section>

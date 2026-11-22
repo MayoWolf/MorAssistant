@@ -30,6 +30,17 @@ export interface PlanningPreferences {
   effort?: CodexEffort;
 }
 
+export interface PlanningProgress {
+  id: string;
+  kind: "inspection" | "reasoning" | "research" | "validation";
+  message: string;
+  at: number;
+  reportedTokens?: number;
+  activityOnly?: boolean;
+}
+
+export type PlanningJobStatus = "planning" | "stopping" | "completed" | "failed" | "cancelled" | "timed_out";
+
 export interface CadTarget {
   id: string;
   name: string;

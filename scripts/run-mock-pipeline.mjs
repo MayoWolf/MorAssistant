@@ -392,6 +392,8 @@ const api = spawn(process.execPath, [resolve(root, "services/api/dist/server.js"
     ONSHAPE_SNAPSHOT_FRESH_MS: "0",
     CODEX_MODEL: "gpt-6.2-sol",
     CODEX_REASONING_EFFORT: "high",
+    CAD_PLANNING_TIMEOUT_MS: process.env.MOR_MOCK_PLANNING_TIMEOUT_MS ?? "240000",
+    CAD_PLANNING_IDLE_MS: process.env.MOR_MOCK_PLANNING_IDLE_MS ?? "90000",
     CODEX_COMMAND: resolve(root, "scripts/fake-codex-app-server.mjs"),
     CODEX_USERS_ROOT: codexHome
   },

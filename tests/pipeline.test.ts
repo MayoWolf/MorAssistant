@@ -67,7 +67,9 @@ beforeAll(async () => {
       ...process.env,
       MOR_MOCK_APP_PORT: String(appPort),
       MOR_MOCK_ONSHAPE_PORT: String(onshapePort),
-      MOR_MOCK_INSTALLATION_TOKEN: installationToken
+      MOR_MOCK_INSTALLATION_TOKEN: installationToken,
+      MOR_MOCK_PLANNING_TIMEOUT_MS: "1400",
+      MOR_MOCK_PLANNING_IDLE_MS: "500"
     },
     stdio: ["pipe", "pipe", "pipe"]
   });
@@ -672,4 +674,48 @@ describe("installed Onshape extension pipeline", () => {
     });
     expect(configuredDimension.status).toBe(409);
   });
+
+  it("stops stalled or over-budget planning runs, reports usage, and releases the session for a new turn", async () => {
+    const context = { documentId: "d", workspaceId: "w", elementId: "e", server: onshapeOrigin };
+    const headers = sessionHeaders({ origin: appOrigin, "content-type": "application/json" });
+    const readJob = async (id: string) => fetch(`${appOrigin}/api/plan-jobs/${id}`, { headers }).then((r) => r.json()) as Promise<{
+      status: string; reportedTokens?: number; error?: string; plan?: unknown;
+    }>;
+    const start = async (prompt: string) => {
+      const response = await fetch(`${appOrigin}/api/plan-jobs`, { method: "POST", headers, body: JSON.stringify({ prompt, context }) });
+      expect(response.status).toBe(202);
+      return await response.json() as { id: string; deadlineAt: number; createdAt: number };
+    };
+    const stop = async (id: string) => fetch(`${appOrigin}/api/plan-jobs/${id}/cancel`, {
+      method: "POST", headers: sessionHeaders({ origin: appOrigin })
+    });
+    const finished = async (id: string, status: string) => {
+      await expect.poll(async () => (await readJob(id)).status, { timeout: 7_000, interval: 100 }).toBe(status);
+      return readJob(id);
+    };
+    const before = await fetch(`${onshapeOrigin}/__state`).then((r) => r.json());
+    const manual = await start("Hold the silent planning fixture for me to stop");
+    expect(manual.deadlineAt - manual.createdAt).toBe(1400);
+    await expect.poll(async () => (await readJob(manual.id)).reportedTokens, { timeout: 1_000, interval: 20 }).toBe(3210);
+    const active = await fetch(`${appOrigin}/api/plan-jobs/latest?${new URLSearchParams(context)}`, { headers });
+    expect(await active.json()).toMatchObject({ job: { id: manual.id, status: "planning" } });
+    const unauthorized = await fetch(`${appOrigin}/api/plan-jobs/${manual.id}/cancel`, { method: "POST", headers: { origin: appOrigin } });
+    expect(unauthorized.status).toBe(401);
+    expect(await (await stop(manual.id)).json()).toMatchObject({ status: "stopping" });
+    const cancelled = await finished(manual.id, "cancelled");
+    expect(cancelled.error).toContain("Codex confirmed the turn ended");
+    expect(cancelled.plan).toBeUndefined();
+
+    const silent = await start("Hold the silent planning fixture until it stalls");
+    expect((await finished(silent.id, "timed_out")).error).toContain("Codex sent no updates");
+    const busy = await start("Hold the busy planning fixture past the request deadline");
+    expect((await finished(busy.id, "timed_out")).error).toContain("reached its");
+    const unresponsive = await start("Hold the unresponsive planning fixture past the stop request");
+    expect((await finished(unresponsive.id, "timed_out")).error).toContain("terminated its local Codex worker");
+
+    const next = await start("What did we just change?");
+    expect((await finished(next.id, "completed")).plan).toBeTruthy();
+    const after = await fetch(`${onshapeOrigin}/__state`).then((r) => r.json());
+    expect(after).toEqual(before);
+  }, 12_000);
 });
