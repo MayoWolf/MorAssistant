@@ -13,9 +13,34 @@ export interface OnshapeElementContext {
 export type PartStudioContext = OnshapeElementContext;
 export type AssemblyContext = OnshapeElementContext;
 
+export const DEFAULT_CODEX_MODEL = "gpt-6.2-sol";
+export const DEFAULT_CODEX_EFFORT = "high";
+export const CODEX_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
+export type CodexEffort = typeof CODEX_EFFORTS[number];
+
+export interface CodexModelOption {
+  model: string;
+  label: string;
+  defaultEffort: CodexEffort;
+  efforts: CodexEffort[];
+}
+
+export interface PlanningPreferences {
+  model?: string;
+  effort?: CodexEffort;
+}
+
+export interface CadTarget {
+  id: string;
+  name: string;
+  type: string;
+}
+
 export interface ConnectionStatus {
   onshape: "connected" | "disconnected";
   codex: "connected" | "pending" | "disconnected";
+  codexModels?: CodexModelOption[];
+  deviceLogin?: DeviceCodeLogin;
   codexRuntime?: {
     configuredModel?: string;
     model: string;

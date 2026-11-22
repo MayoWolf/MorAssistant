@@ -409,7 +409,8 @@ export interface CompactFeatureSpecContext {
 export function compactFeatureSpecContext(
   response: unknown,
   capabilities: readonly OnshapeCapability[],
-  maximumRelevantBytes = 100_000
+  maximumRelevantBytes = 100_000,
+  exactTypeOrName?: string
 ): CompactFeatureSpecContext {
   const specs = featureSpecArray(response);
   const desired = new Set(capabilities.flatMap((capability) => capability.featureTypes).map((value) => value.toLocaleLowerCase()));
@@ -424,7 +425,9 @@ export function compactFeatureSpecContext(
   for (const spec of specs) {
     const featureType = typeof spec.featureType === "string" ? spec.featureType : "";
     const displayName = [spec.featureName, spec.name, spec.displayName].find((value) => typeof value === "string") as string | undefined;
-    const isRelevant = desired.has(featureType.toLocaleLowerCase()) ||
+    const isRelevant = featureType.toLowerCase() === exactTypeOrName?.toLowerCase()
+      || (displayName !== undefined && displayName.toLowerCase() === exactTypeOrName?.toLowerCase())
+      || desired.has(featureType.toLocaleLowerCase()) ||
       (displayName ? capabilities.some((capability) => capability.name.toLocaleLowerCase() === displayName.toLocaleLowerCase()) : false);
     if (!isRelevant) continue;
     const candidate = boundedClone(spec, Math.min(30_000, budget));

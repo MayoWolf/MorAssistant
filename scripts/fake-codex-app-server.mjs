@@ -9,6 +9,7 @@ let connected = false;
 let threadCounter = 0;
 let turnCounter = 0;
 const threads = new Map();
+const toolReplies = new Map();
 
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -22,7 +23,8 @@ function planFromInput(params, earlierTurns = []) {
   const markerIndex = text.indexOf(marker);
   const model = markerIndex >= 0 ? JSON.parse(text.slice(markerIndex + marker.length)) : { features: [] };
   const snapshot = model.features ?? [];
-  const userRequest = markerIndex >= 0 ? text.slice(0, markerIndex) : text;
+  const requestStart = text.indexOf("User request:\n");
+  const userRequest = text.slice(requestStart >= 0 ? requestStart + "User request:\n".length : 0, markerIndex >= 0 ? markerIndex : undefined);
   if (marker === assemblyMarker) {
     if (/what did we just|what have we done|summarize (?:our|the) conversation/i.test(userRequest)) {
       return {
@@ -290,6 +292,12 @@ lines.on("line", (line) => {
     return;
   }
   if (request.method === "initialized") return;
+  if (toolReplies.has(request.id) && !request.method) {
+    const reply = toolReplies.get(request.id);
+    toolReplies.delete(request.id);
+    reply(request.result);
+    return;
+  }
 
   try {
     switch (request.method) {
@@ -317,14 +325,20 @@ lines.on("line", (line) => {
           id: request.id,
           result: {
             data: [{
-              id: "gpt-5.6-sol",
-              model: "gpt-5.6-sol",
-              displayName: "GPT-5.6 Sol",
+              id: "gpt-6.2-sol",
+              model: "gpt-6.2-sol",
+              displayName: "GPT-6.2 Sol",
               description: "Fake deterministic pipeline model",
               isDefault: true,
               hidden: false,
               defaultReasoningEffort: "medium",
               supportedReasoningEfforts: ["medium", "high"].map((reasoningEffort) => ({ reasoningEffort, description: reasoningEffort }))
+            }, {
+              id: "gpt-6.2-astra",
+              model: "gpt-6.2-astra",
+              displayName: "GPT-6.2 Astra",
+              defaultReasoningEffort: "medium",
+              supportedReasoningEfforts: [{ reasoningEffort: "medium" }]
             }],
             nextCursor: null
           }
@@ -345,13 +359,16 @@ lines.on("line", (line) => {
         if (request.params?.ephemeral !== false) {
           throw new Error("thread/start must persist the conversation rollout");
         }
+        if (!request.params?.dynamicTools?.some((tool) => tool.name === "inspect_onshape_target")) {
+          throw new Error("thread/start must register Onshape inspection tools");
+        }
         const id = `thread-${++threadCounter}`;
         threads.set(id, { turns: [] });
         send({
           id: request.id,
           result: {
             thread: { id },
-            model: request.params?.model ?? "gpt-5.6-sol",
+            model: request.params?.model ?? "gpt-6.2-sol",
             modelProvider: "openai",
             reasoningEffort: null,
             serviceTier: null,
@@ -370,7 +387,7 @@ lines.on("line", (line) => {
           id: request.id,
           result: {
             thread: { id },
-            model: request.params?.model ?? "gpt-5.6-sol",
+            model: request.params?.model ?? "gpt-6.2-sol",
             modelProvider: "openai",
             reasoningEffort: null,
             serviceTier: null,
@@ -388,7 +405,8 @@ lines.on("line", (line) => {
         if ("access" in request.params.sandboxPolicy) {
           throw new Error("turn/start must not send the removed readOnly.access field");
         }
-        if (request.params?.effort !== "high") throw new Error("turn/start must pin high reasoning effort");
+        const expectedEffort = request.params?.model === "gpt-6.2-astra" ? "medium" : "high";
+        if (request.params?.effort !== expectedEffort) throw new Error("turn/start must use the selected reasoning effort");
         if (request.params?.summary !== "detailed") throw new Error("turn/start must request detailed reasoning summaries");
         const thread = threads.get(request.params?.threadId);
         if (!thread) throw new Error("turn/start must target a started or resumed persistent thread");
@@ -397,7 +415,6 @@ lines.on("line", (line) => {
         const plan = { ...planned, message: planned.message ?? planned.summary, sources: [] };
         const userText = request.params?.input?.find((entry) => entry?.type === "text")?.text ?? "";
         thread.turns.push(userText);
-        const item = { type: "agentMessage", id: `message-${id}`, text: JSON.stringify(plan), phase: "final_answer", memoryCitation: null };
         send({ id: request.id, result: { turn: { id, status: "inProgress", items: [], error: null } } });
         send({
           method: "item/reasoning/summaryTextDelta",
@@ -423,11 +440,13 @@ lines.on("line", (line) => {
           method: "item/completed",
           params: { threadId: request.params.threadId, turnId: id, item: searchItem, completedAtMs: Date.now() }
         });
-        send({
+        const finish = (finalPlan) => {
+          const item = { type: "agentMessage", id: `message-${id}`, text: JSON.stringify(finalPlan), phase: "final_answer", memoryCitation: null };
+          send({
           method: "item/completed",
           params: { threadId: request.params.threadId, turnId: id, item, completedAtMs: Date.now() }
-        });
-        send({
+          });
+          send({
           method: "turn/completed",
           params: {
             threadId: request.params.threadId,
@@ -438,7 +457,22 @@ lines.on("line", (line) => {
               error: null
             }
           }
-        });
+          });
+        };
+        if (/User request:\nPreview a clearer feature name/u.test(userText)) {
+          const rpcId = `tool-${id}`;
+          toolReplies.set(rpcId, (result) => {
+            const target = result?.success ? JSON.parse(result.contentItems[0].text) : {};
+            const attached = userText.includes('"selectedTargets":[{"id":"f1","name":"Extrude 1"');
+            finish(target.feature?.featureId === "f1" && attached
+              ? { ...plan, message: "Read the attached Extrude 1 payload." } : plan);
+          });
+          send({ id: rpcId, method: "item/tool/call", params: {
+            threadId: request.params.threadId, turnId: id, callId: rpcId, tool: "inspect_onshape_target", arguments: { query: "f1" }
+          } });
+        } else {
+          finish(plan);
+        }
         break;
       }
       default:

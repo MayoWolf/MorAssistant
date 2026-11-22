@@ -10,6 +10,8 @@ The central rule is simple:
 
 Each user and Onshape element pair also owns one persistent Codex app-server thread. The encrypted session stores only the thread identifier and visible CAD-plan transcript; Codex rollout history stays in that user's isolated, persistent `CODEX_HOME`. Panel reloads restore the transcript, backend restarts resume the same thread, and the current Part Studio or Assembly snapshot is appended to every new turn. Conversation context therefore carries intent while Onshape remains the authority on current geometry.
 
+Each turn receives the selected model and reasoning effort from the account’s Codex model list, attached targets resolved against the current tab snapshot, and recent execution outcomes. Two read-only Codex tools provide operation guidance, exact feature specifications and target details from that snapshot. Existing chats retain their visible history and use it to seed a tool-enabled thread on their first upgraded turn.
+
 ## System map
 
 ```mermaid

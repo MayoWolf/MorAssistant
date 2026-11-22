@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import { z } from "zod";
+import type { DeviceCodeLogin } from "@morassistant/shared-types";
 import type { StoredCadPlan } from "@morassistant/cad-command-schema";
 import type {
   FeatureListResponse,
@@ -30,7 +31,7 @@ export interface UserSession {
   onshapeRefresh?: Promise<OnshapeTokens>;
   onshapeState?: string;
   onshapeRedirectUri?: string;
-  codexLoginId?: string;
+  codexLogin?: DeviceCodeLogin;
   codexConnected?: boolean;
   codexThreads: Map<string, string>;
   plans: Map<string, StoredCadPlan>;

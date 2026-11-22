@@ -1,10 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import type { StoredCadPlan } from "@morassistant/cad-command-schema";
-import type { ConnectionStatus, DeviceCodeLogin, OnshapeElementContext, OnshapeElementType } from "@morassistant/shared-types";
+import {
+  DEFAULT_CODEX_EFFORT, DEFAULT_CODEX_MODEL,
+  type CadTarget, type CodexEffort, type ConnectionStatus, type DeviceCodeLogin, type OnshapeElementContext, type OnshapeElementType
+} from "@morassistant/shared-types";
 
 const emptyStatus: ConnectionStatus = { onshape: "disconnected", codex: "disconnected" };
 const apiOrigin = (import.meta.env.VITE_API_ORIGIN ?? "").replace(/\/$/, "");
 const installationStorageKey = "morassistant.installation-token";
+const effortLabels: Record<CodexEffort, string> = {
+  none: "None", minimal: "Minimal", low: "Low", medium: "Medium", high: "High",
+  xhigh: "Extra high", max: "Max", ultra: "Ultra"
+};
+
+function modelLabel(model: string): string {
+  return model.replace(/^gpt-/u, "GPT ").replace(/-(sol|astra|terra|luna)$/u, (_, name: string) =>
+    ` ${name.charAt(0).toUpperCase()}${name.slice(1)}`);
+}
 
 function installationTokenFromLaunch(): string | null {
   const hash = new URLSearchParams(location.hash.replace(/^#/, ""));
@@ -131,23 +143,22 @@ function BrandMark() {
 }
 
 function ConnectionPill({ label, state }: { label: string; state: string }) {
-  return <span className={`connection-pill ${state}`}><i />{label}</span>;
+  return <span className={`connection-pill ${state}`}><i aria-hidden="true" />{label}</span>;
 }
 
 function LiveActivity({ progress, label }: { progress: PlanningProgress[]; label: string }) {
   const visible = progress.length > 0 ? progress : [{
     id: "starting",
     kind: "inspection" as const,
-    message: "Starting Sol and loading the current Onshape tab context.",
+    message: "Reading the current Onshape tab.",
     at: Date.now()
   }];
   return <section className="live-activity" aria-label={label} aria-live="polite">
-    <div className="activity-heading"><span className="live-dot" /><div><strong>Sol is working live</strong><small>{label}</small></div></div>
+    <div className="activity-heading"><span className="live-dot" /><strong>{label}</strong></div>
     <ol>{visible.map((item) => <li key={item.id} className={item.kind}>
       <span>{item.kind === "research" ? "⌕" : item.kind === "validation" ? "✓" : item.kind === "reasoning" ? "◇" : "↻"}</span>
       <p>{item.message}</p>
     </li>)}</ol>
-    <p className="activity-note">Live reasoning summaries and research activity—not private chain-of-thought.</p>
   </section>;
 }
 
@@ -218,23 +229,12 @@ function PlanCard({
 }) {
   const hasOperations = plan.operations.length > 0;
   return <section className={`plan ${plan.status}`}>
-    <div className="plan-heading">
-      <div><span className="eyebrow">{hasOperations ? "Proposed plan" : "Answer"}</span><h2>{plan.summary}</h2></div>
-      <span className={`risk ${plan.risk}`}>{hasOperations ? `${plan.risk} risk` : "no change"}</span>
-    </div>
-    <p className="assistant-copy">{plan.message ?? plan.summary}</p>
-    {plan.agentTrace && <div className="agent-trace" aria-label="Model inspection summary">
-      <span><strong>{plan.agentTrace.elementType === "ASSEMBLY" ? plan.agentTrace.instanceCount ?? "—" : plan.agentTrace.featureCount}</strong><small>{plan.agentTrace.elementType === "ASSEMBLY" ? "instances read" : "features read"}</small></span>
-      <span><strong>{plan.agentTrace.capabilityCount ?? "—"}</strong><small>CAD tools learned</small></span>
-      <span><strong>{plan.agentTrace.elementType === "ASSEMBLY" ? plan.agentTrace.featureCount : plan.agentTrace.nativeFeatureTypeCount ?? "—"}</strong><small>{plan.agentTrace.elementType === "ASSEMBLY" ? "mates / features" : "live feature types"}</small></span>
-      <span><strong>{plan.agentTrace.dependencyCount}</strong><small>{plan.agentTrace.elementType === "ASSEMBLY" ? "mate links" : "dependency links"}</small></span>
-      <span><strong>{plan.agentTrace.elementType === "ASSEMBLY" ? plan.operations.filter((operation) => operation.type === "insert_assembly_component").length : plan.agentTrace.geometry.solidBodyCount ?? plan.agentTrace.geometry.partCount ?? "—"}</strong><small>{plan.agentTrace.elementType === "ASSEMBLY" ? "library inserts" : "solid bodies"}</small></span>
-      <span><strong>{plan.agentTrace.planningAttempts}</strong><small>validation pass{plan.agentTrace.planningAttempts === 1 ? "" : "es"}</small></span>
+    {hasOperations && <div className="plan-heading">
+      <h2>{plan.summary}</h2>
+      <span className={`risk ${plan.risk}`}>{plan.risk} risk</span>
     </div>}
-    {plan.agentTrace?.runtime && <p className="runtime-proof">
-      {plan.agentTrace.continuedConversation ? "Continued conversation" : "Started conversation"} · <strong>{plan.agentTrace.runtime.model}</strong>
-      {plan.agentTrace.runtime.reasoningEffort ? ` · ${plan.agentTrace.runtime.reasoningEffort} reasoning` : ""}
-    </p>}
+    {(!hasOperations || (plan.message && plan.message !== plan.summary)) &&
+      <p className="assistant-copy">{plan.message ?? plan.summary}</p>}
     {hasOperations && <ol className="operations">
       {plan.operations.map((operation, index) => <li key={`${operation.type}-${index}`}>
         <span className="op-index">{String(index + 1).padStart(2, "0")}</span>
@@ -252,10 +252,18 @@ function PlanCard({
     )}</div>}
     {plan.result?.regenerationErrors.length ? <div className="warnings error-list">{plan.result.regenerationErrors.map((item) => <p key={item.featureId}>! {item.featureName}: {item.message ?? item.status}</p>)}</div> : null}
     {plan.result?.preexistingRegenerationErrors?.length ? <div className="existing-errors"><p>{plan.result.preexistingRegenerationErrors.length} pre-existing model error(s) were recorded separately and did not fail this plan.</p></div> : null}
-    <div className="approval-bar">
-      <div><strong>{!hasOperations ? "Answered" : plan.status === "pending" ? "Ready for review" : plan.status === "applied" ? "Changes applied" : "Execution stopped"}</strong><small>{!hasOperations ? "No CAD change was proposed." : plan.status === "pending" ? "Onshape can undo applied edits." : `${plan.result?.operations.filter((item) => item.status === "applied").length ?? 0} operation(s) applied.`}</small></div>
+    {hasOperations && <div className="approval-bar">
+      <div><strong>{plan.status === "pending" ? "Ready for review" : plan.status === "applying" ? "Applying changes" : plan.status === "applied" ? "Changes applied" : "Execution stopped"}</strong><small>{plan.status === "pending" ? `${plan.operations.length} proposed change${plan.operations.length === 1 ? "" : "s"}` : `${plan.result?.operations.filter((item) => item.status === "applied").length ?? 0} applied`}</small></div>
       {hasOperations && plan.status === "pending" && <button className="apply-button" onClick={() => onApply(plan)} disabled={busy !== null}>{busy === "applying" && activePlanId === plan.id ? "Applying…" : "Approve & apply"}</button>}
-    </div>
+    </div>}
+    {plan.agentTrace && <details className="turn-details">
+      <summary>Inspection details</summary>
+      <p>{plan.agentTrace.elementType === "ASSEMBLY"
+        ? `${plan.agentTrace.instanceCount ?? 0} instances · ${plan.agentTrace.featureCount} assembly features`
+        : `${plan.agentTrace.featureCount} features · ${plan.agentTrace.nativeFeatureTypeCount ?? 0} live feature types`}
+        {` · ${plan.agentTrace.planningAttempts} validation pass${plan.agentTrace.planningAttempts === 1 ? "" : "es"}`}</p>
+      {plan.agentTrace.inspectionWarnings?.map((warning) => <p key={warning}>{warning}</p>)}
+    </details>}
   </section>;
 }
 
@@ -276,7 +284,9 @@ function ConversationTurn({
   return <article className="chat-turn">
     <div className="user-message"><span>You</span><p>{prompt}</p></div>
     <div className="assistant-message">
-      <div className="assistant-label"><BrandMark /><span>Sol</span></div>
+      <div className="assistant-label"><BrandMark /><strong>MorAssistant</strong>
+        {plan.agentTrace?.runtime && <small>{modelLabel(plan.agentTrace.runtime.model)}{plan.agentTrace.runtime.reasoningEffort ? ` · ${effortLabels[plan.agentTrace.runtime.reasoningEffort as CodexEffort] ?? plan.agentTrace.runtime.reasoningEffort}` : ""}</small>}
+      </div>
       {latest ? <PlanCard plan={plan} busy={busy} activePlanId={activePlanId} onApply={onApply} /> :
         <details className="past-turn">
           <summary><span>{plan.message ?? plan.summary}</span><small>{plan.operations.length === 0 ? "Answer" : `${plan.operations.length} operation${plan.operations.length === 1 ? "" : "s"}`} · {plan.status}</small></summary>
@@ -291,8 +301,15 @@ export function App() {
   const [context, setContext] = useState<OnshapeElementContext | null>(launchContext);
   const [contextName, setContextName] = useState<string | null>(null);
   const [status, setStatus] = useState<ConnectionStatus | null>(null);
+  const [model, setModel] = useState(DEFAULT_CODEX_MODEL);
+  const [effort, setEffort] = useState<CodexEffort>(DEFAULT_CODEX_EFFORT);
   const [deviceLogin, setDeviceLogin] = useState<DeviceCodeLogin | null>(null);
+  const [connecting, setConnecting] = useState(false);
   const [prompt, setPrompt] = useState("");
+  const [targets, setTargets] = useState<CadTarget[]>([]);
+  const [choices, setChoices] = useState<CadTarget[] | null>(null);
+  const [loadingTargets, setLoadingTargets] = useState(false);
+  const [filter, setFilter] = useState("");
   const [history, setHistory] = useState<StoredCadPlan[]>([]);
   const [hasPersistentContext, setHasPersistentContext] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
@@ -310,7 +327,7 @@ export function App() {
       const next = await api<ConnectionStatus>("/api/status");
       setStatus(next);
       setStatusError(null);
-      if (next.codex !== "pending") setDeviceLogin(null);
+      setDeviceLogin(next.deviceLogin ?? null);
     } catch (cause) {
       setStatusError(cause instanceof Error ? cause.message : "Could not reach the service.");
     }
@@ -321,14 +338,14 @@ export function App() {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
       await refreshStatus();
-      if (active) timer = setTimeout(() => void poll(), 3_000);
+      if (active) timer = setTimeout(() => void poll(), status?.codex === "pending" ? 3_000 : 20_000);
     };
     void poll();
     return () => {
       active = false;
       if (timer) clearTimeout(timer);
     };
-  }, [refreshStatus]);
+  }, [refreshStatus, status?.codex]);
 
   useEffect(() => {
     if (!context || status?.onshape !== "connected" || contextName) return;
@@ -344,7 +361,7 @@ export function App() {
   }, [context, contextName, status?.onshape]);
 
   useEffect(() => {
-    if (!context) return;
+    if (!context || !contextName) return;
     let active = true;
     void api<ConversationResponse>(`/api/conversation?${contextQuery(context)}`).then((conversation) => {
       if (!active) return;
@@ -357,10 +374,10 @@ export function App() {
       setHistoryLoaded(true);
     });
     return () => { active = false; };
-  }, [context]);
+  }, [context, contextName]);
 
   useEffect(() => {
-    conversationEnd.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    conversationEnd.current?.scrollIntoView({ block: "nearest" });
   }, [history.length, pendingPrompt, activity]);
 
   const upsertPlan = (nextPlan: StoredCadPlan) => {
@@ -372,29 +389,49 @@ export function App() {
 
   const connectCodex = async () => {
     setError(null);
+    setConnecting(true);
     try {
       const login = await api<DeviceCodeLogin>("/api/codex/connect", { method: "POST" });
       setDeviceLogin(login);
       setStatus((current) => ({ ...(current ?? emptyStatus), codex: "pending" }));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not start ChatGPT sign-in.");
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  const loadTargets = async () => {
+    if (!context || loadingTargets) return;
+    setLoadingTargets(true);
+    setError(null);
+    try {
+      const response = await api<{ targets: CadTarget[] }>(`/api/context/targets?${contextQuery(context)}`);
+      setChoices(response.targets);
+      setFilter("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not load CAD targets.");
+    } finally {
+      setLoadingTargets(false);
     }
   };
 
   const createPlan = async (event: FormEvent) => {
     event.preventDefault();
-    if (!context || !prompt.trim()) return;
+    if (!context || !ready || busy || prompt.trim().length < 3) return;
     const submittedPrompt = prompt.trim();
     setBusy("planning"); setError(null); setRecoveryMessage(null); setActivity([]); setPendingPrompt(submittedPrompt); setPrompt("");
     try {
       const job = await api<PlanJobResponse>("/api/plan-jobs", {
         method: "POST",
-        body: JSON.stringify({ prompt: submittedPrompt, context })
+        body: JSON.stringify({ prompt: submittedPrompt, context, model, effort, targetIds: targets.map((target) => target.id) })
       });
       setActivity(job.progress ?? []);
       const completedPlan = job.status === "completed" ? job.plan : await waitForPlan(job.id, setActivity);
       upsertPlan(completedPlan);
       setHasPersistentContext(true);
+      setTargets([]);
+      setChoices(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not create a plan.");
       setPrompt((current) => current || submittedPrompt);
@@ -422,7 +459,7 @@ export function App() {
         setRecoveryMessage([
           `Execution stopped after ${appliedCount} operation${appliedCount === 1 ? "" : "s"} applied.`,
           stoppedAt ? `Stopped at operation ${stoppedAt.index + 1}: ${stoppedAt.message}` : undefined,
-          "Codex re-read the updated model and prepared this recovery plan; nothing else will run until you approve it."
+          "A recovery plan is ready for review."
         ].filter(Boolean).join(" "));
       }
     } catch (cause) {
@@ -434,8 +471,6 @@ export function App() {
     }
   };
 
-  const updatePrompt = (value: string) => setPrompt(value);
-
   const handlePromptKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
       event.preventDefault();
@@ -443,24 +478,37 @@ export function App() {
     }
   };
 
-  const ready = status?.onshape === "connected" && status.codex === "connected" && Boolean(context);
   const isAssembly = context?.elementType === "ASSEMBLY";
   const elementLabel = isAssembly ? "Assembly" : "Part Studio";
-  const runtimeLabel = status?.codexRuntime
-    ? `${status.codexRuntime.model.replace(/^gpt-/u, "GPT ").replace(/-sol$/u, " Sol")}${status.codexRuntime.reasoningEffort ? ` · ${status.codexRuntime.reasoningEffort}` : ""}`
-    : "Codex";
+  const modelOptions = status?.codexModels ?? [];
+  const activeModel = modelOptions.find((option) => option.model === model);
+  const effortOptions = activeModel?.efforts ?? [effort];
+  const connected = status?.onshape === "connected" && status?.codex === "connected";
+  const modelAvailable = activeModel?.efforts.includes(effort) ?? false;
+  const ready = connected && modelAvailable && Boolean(contextName) && historyLoaded;
+  const examples = isAssembly
+    ? ["What’s in this assembly?", "Find a 2-inch compliant wheel", "Check which components are mated"]
+    : ["Make a 40 mm × 20 mm mounting plate", "Inspect the feature tree", "Build a cylinder Ø25 mm × 40 mm"];
+  const visibleTargets = choices?.filter((target) => `${target.name} ${target.type}`.toLowerCase().includes(filter.toLowerCase())).slice(0, 30);
 
-  return <main>
-    <header>
-      <div className="brand"><BrandMark /><div><strong>MorAssistant</strong><span>Onshape copilot</span></div></div>
-      <div className="connections">
-        <ConnectionPill label={runtimeLabel} state={status?.codexRuntime && !status.codexRuntime.available ? "disconnected" : status?.codex ?? "loading"} />
+  return <main className="panel">
+    <header className="topbar">
+      <div className="brand"><BrandMark /><strong>MorAssistant</strong></div>
+      <div className="connections" aria-label="Connection status">
+        <ConnectionPill label="Onshape" state={status?.onshape ?? "loading"} />
+        <ConnectionPill label="ChatGPT" state={status?.codex ?? "loading"} />
       </div>
     </header>
+    <div className="document-bar">
+      <span className="eyebrow">{context ? (contextName ? elementLabel : "Onshape workspace") : "Onshape extension"}</span>
+      {contextName && <strong title={contextName}>{contextName}</strong>}
+      {hasPersistentContext && <span className="context-status" title="Conversation is saved for this tab">Saved chat</span>}
+    </div>
 
+    <section className="chat-shell" aria-label={`${elementLabel} conversation`}>
     {!context && <section className="notice warning">
       <strong>Open this panel from a Part Studio or Assembly</strong>
-      <p>The extension URL must include documentId, workspaceId, and elementId.</p>
+      <p>In an editable Onshape workspace, open MorAssistant from the right sidebar.</p>
     </section>}
 
     {status && status.onshape !== "connected" && <section className="notice error">
@@ -468,38 +516,38 @@ export function App() {
       <p>This installed extension needs Onshape access in My account → Applications. After granting it, reopen the panel.</p>
     </section>}
 
-    {status && status.codex !== "connected" && <section className="setup-card">
-      <span className="eyebrow">One-time setup</span>
-      <h1>Connect Codex</h1>
-      <p>Use your ChatGPT sign-in to power this Onshape copilot. No OpenAI API key is required.</p>
+    {status?.onshape === "connected" && status.codex !== "connected" && !deviceLogin && <section className="setup-card">
+      <h1>Connect ChatGPT</h1>
+      <p>Sign in to use the models available to your ChatGPT account.</p>
       <div className="setup-actions">
-        <button type="button" className="connect-button" onClick={() => void connectCodex()} disabled={status.codex === "pending"}>
-          <span className="step-num">◇</span><span><strong>{status.codex === "pending" ? "Waiting for sign-in" : "Continue with ChatGPT"}</strong><small>Authorize Codex for this Onshape extension</small></span><b>→</b>
+        <button type="button" className="connect-button" onClick={() => void connectCodex()} disabled={connecting || status.codex === "pending"}>
+          {connecting ? "Starting sign-in…" : status.codex === "pending" ? "Waiting for sign-in…" : "Continue with ChatGPT"} <span aria-hidden="true">↗</span>
         </button>
       </div>
     </section>}
 
     {deviceLogin && <section className="device-card">
-      <span className="eyebrow">ChatGPT sign-in</span>
+      <h2>Finish ChatGPT sign-in</h2>
       <p>Open the secure verification page, then enter this one-time code.</p>
       <div className="device-code">{deviceLogin.userCode}</div>
       <a href={deviceLogin.verificationUrl} target="_blank" rel="noreferrer">Open verification page ↗</a>
     </section>}
 
-    {(error || statusError) && <section className="notice error" role="alert"><strong>Something needs attention</strong><p>{error ?? statusError}</p></section>}
+    {!status && !statusError && <p className="loading-copy" role="status">Connecting to MorAssistant…</p>}
+    {statusError && <section className="notice error" role="alert"><strong>Connection problem</strong><p>{statusError}</p>
+      <button className="secondary-button" type="button" onClick={() => void refreshStatus()}>Retry connection</button>
+    </section>}
+    {error && <section className="notice error" role="alert"><p>{error}</p><button className="secondary-button" type="button" onClick={() => setError(null)}>Dismiss</button></section>}
     {recoveryMessage && <section className="notice recovery"><strong>Recovery plan ready</strong><p>{recoveryMessage}</p></section>}
-    <section className="chat-shell" aria-label={`${elementLabel} conversation`}>
-      <div className="chat-meta">
-        <div><span className="eyebrow">{elementLabel} chat{contextName ? ` · ${contextName}` : ""}</span><strong>{history.length} turn{history.length === 1 ? "" : "s"}</strong></div>
-        <span className={hasPersistentContext ? "memory-on" : "memory-new"}><i />{hasPersistentContext ? "Context active" : "New context"}</span>
-      </div>
-      {!historyLoaded && <div className="chat-empty"><BrandMark /><strong>Loading conversation…</strong></div>}
-      {historyLoaded && history.length === 0 && !pendingPrompt && <div className="chat-empty">
-        <BrandMark />
-        <strong>Build with Sol, one conversation at a time.</strong>
-        <p>{isAssembly
-          ? "Ask about the mechanism, import an FRCDesignLib component, place wheels on shafts, move instances, or suppress hardware. Sol keeps the thread and re-reads the live assembly every turn."
-          : "Ask for a part, then keep refining it: “make it wider,” “add four mounting holes,” or “now fillet those edges.” Sol keeps the thread and re-reads the live model every turn."}</p>
+      {context && connected && !historyLoaded && !error && <p className="loading-copy" role="status">Loading this tab’s conversation…</p>}
+      {connected && historyLoaded && history.length === 0 && !pendingPrompt && <div className="chat-empty">
+        <div className="empty-mark"><BrandMark /></div>
+        <h1>{isAssembly ? "Work on this assembly" : "Work on this Part Studio"}</h1>
+        <p>{isAssembly ? "Inspect constraints, find hardware, or preview a placement." : "Build a feature, inspect geometry, or refine an existing part."}</p>
+        <div className="examples">{examples.map((example) => <button type="button" key={example} disabled={!ready}
+          onClick={() => { setPrompt(example); document.getElementById("cad-prompt")?.focus(); }}>
+          {example}<span aria-hidden="true">↗</span>
+        </button>)}</div>
       </div>}
       {history.map((item, index) => <ConversationTurn
         key={item.id}
@@ -512,35 +560,77 @@ export function App() {
       {pendingPrompt && <article className="chat-turn pending-turn">
         <div className="user-message"><span>You</span><p>{pendingPrompt}</p></div>
         <div className="assistant-message">
-          <div className="assistant-label"><BrandMark /><span>Sol</span></div>
-          <LiveActivity progress={activity} label={busy === "recovering" ? "Preparing a recovery plan" : "Continuing the conversation"} />
+          <div className="assistant-label"><BrandMark /><strong>MorAssistant</strong></div>
+          <LiveActivity progress={activity} label={busy === "recovering" ? "Preparing a recovery plan" : "Working on your request"} />
         </div>
       </article>}
       <div ref={conversationEnd} />
     </section>
 
-    <section className="workspace composer">
-      <div className="section-title"><span className="eyebrow">Message Sol</span><span className="safe-label">Same {elementLabel} context</span></div>
+    <section className="composer" aria-label="Message composer">
       <form onSubmit={(event) => void createPlan(event)}>
+        <div className="model-controls">
+          <label>Model
+            <select aria-label="Model" value={model} onChange={(event) => {
+              const next = modelOptions.find((option) => option.model === event.target.value);
+              if (!next) return;
+              setModel(next.model);
+              setEffort(next.efforts.includes(DEFAULT_CODEX_EFFORT) ? DEFAULT_CODEX_EFFORT : next.defaultEffort);
+            }} disabled={!modelOptions.length || busy !== null}>
+              {!activeModel && <option value={model}>{modelLabel(model)}{modelOptions.length ? " (unavailable)" : ""}</option>}
+              {modelOptions.map((option) => <option key={option.model} value={option.model}>{option.label}</option>)}
+            </select>
+          </label>
+          <label>Reasoning
+            <select aria-label="Reasoning" value={effort} onChange={(event) => setEffort(event.target.value as CodexEffort)} disabled={!activeModel || busy !== null}>
+              {!effortOptions.includes(effort) && <option value={effort}>{effortLabels[effort]} (unavailable)</option>}
+              {effortOptions.map((option) => <option key={option} value={option}>{effortLabels[option]}</option>)}
+            </select>
+          </label>
+        </div>
+        {connected && !modelAvailable && <p className="model-help">{modelOptions.length
+          ? "Choose a model and reasoning effort available to your account."
+          : "The model list is unavailable. Retry the connection to reload it."}</p>}
+        {targets.length > 0 && <div className="target-chips" aria-label="Attached CAD targets">{targets.map((target) =>
+          <button type="button" key={target.id} disabled={busy !== null} onClick={() => setTargets((current) => current.filter((item) => item.id !== target.id))}
+            aria-label={`Remove ${target.name}`}>{target.name} <span aria-hidden="true">×</span></button>
+        )}</div>}
+        {choices && <div className="target-picker">
+          <div className="target-picker-top"><label htmlFor="target-filter">Choose {isAssembly ? "instances" : "features"}</label>
+            <button type="button" className="secondary-button" onClick={() => setChoices(null)}>Done</button>
+          </div>
+          <input id="target-filter" type="search" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter by name or type" />
+          <ul>{visibleTargets?.map((target) => {
+            const selected = targets.some((item) => item.id === target.id);
+            return <li key={target.id}><button type="button" aria-pressed={selected} disabled={busy !== null || (!selected && targets.length >= 12)}
+              onClick={() => setTargets((current) => selected ? current.filter((item) => item.id !== target.id) : [...current, target])}>
+              <span>{target.name}</span><small>{target.type}</small>
+            </button></li>;
+          })}</ul>
+          {!visibleTargets?.length && <p>No matching targets.</p>}
+        </div>}
         <textarea
+          id="cad-prompt"
+          aria-label="Message MorAssistant"
           value={prompt}
-          onChange={(event) => updatePrompt(event.target.value)}
+          onChange={(event) => setPrompt(event.target.value)}
           onKeyDown={handlePromptKeyDown}
-          placeholder={history.length
-            ? isAssembly ? "Keep going… import a wheel, place it on that shaft, move it, or ask why." : "Keep going… make it larger, move it, add holes, or ask why."
-            : isAssembly ? "Describe what you want to inspect, import, or place in this assembly…" : "Describe what you want to build or change…"}
-          rows={4}
+          placeholder={history.length ? "Continue this conversation…" : "Describe what you want to inspect or change…"}
+          maxLength={4_000}
+          rows={2}
           disabled={!ready || busy !== null}
         />
         <div className="prompt-footer">
-          <span>{hasPersistentContext ? "Using conversation memory" : context ? `Current ${elementLabel}` : "No Onshape context"}</span>
-          <button type="submit" disabled={!ready || prompt.trim().length < 3 || busy !== null}>
-            {busy === "planning" ? "Thinking…" : "Send"}<span>⌘/Ctrl ↵</span>
+          <button className="secondary-button" type="button" disabled={!connected || !contextName || busy !== null || loadingTargets}
+            onClick={() => choices ? setChoices(null) : void loadTargets()}>
+            {loadingTargets ? "Loading targets…" : choices ? "Close targets" : "+ CAD target"}
+          </button>
+          <button className="send-button" type="submit" title="Send (⌘/Ctrl + Enter)" disabled={!ready || prompt.trim().length < 3 || busy !== null}>
+            {busy === "planning" ? "Working…" : "Send"}<span aria-hidden="true">↑</span>
           </button>
         </div>
       </form>
     </section>
 
-    <footer><span className="shield">◇</span> No CAD change runs without approval</footer>
   </main>;
 }

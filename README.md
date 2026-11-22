@@ -8,7 +8,7 @@
   <img alt="Node 22 or newer" src="https://img.shields.io/badge/node-%E2%89%A522-187A5A.svg" />
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-strict-3178C6.svg" />
   <img alt="Onshape integrated cloud app" src="https://img.shields.io/badge/Onshape-integrated%20cloud%20app-187A5A.svg" />
-  <img alt="GPT-5.6 Sol pinned at high reasoning" src="https://img.shields.io/badge/Codex-GPT--5.6%20Sol%20%C2%B7%20high-111827.svg" />
+  <img alt="GPT-6.2 Sol with High reasoning by default" src="https://img.shields.io/badge/Codex-GPT--6.2%20Sol%20%C2%B7%20High-111827.svg" />
 </p>
 
 <p align="center">
@@ -45,7 +45,9 @@ MorAssistant is a free, open-source **Onshape right-panel copilot** powered by C
 > [!IMPORTANT]
 > MorAssistant is an installable Onshape application, **not a standalone CAD website**. The Netlify page is the iframe UI used by Onshape; the persistent API is the trusted boundary that owns OAuth, validates plans, and applies approved operations.
 
-The personal deployment pins **GPT‑5.6 Sol at high reasoning effort**, verifies the model exposed by the signed-in Codex runtime, displays that proof in the panel, and refuses to plan if Codex attempts to fall back to a different model.
+The composer defaults to **GPT‑6.2 Sol · High** and shows the models and reasoning levels available through your ChatGPT sign-in. Switch models between turns while staying in the same tab conversation. Attach a specific feature or instance with **+ CAD target** when your request refers to “this part” or “that extrude.”
+
+During a turn, the planner can look up an Onshape operation’s prerequisites and live feature specification or inspect a specific feature payload, assembly occurrence or mate. The review card shows exactly which edits are proposed and which model produced the turn.
 
 ### What “Adam-like” means here
 

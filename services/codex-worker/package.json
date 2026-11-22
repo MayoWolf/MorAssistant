@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@morassistant/cad-command-schema": "*",
-    "@morassistant/onshape-client": "*"
+    "@morassistant/onshape-client": "*",
+    "@morassistant/shared-types": "*"
   }
 }

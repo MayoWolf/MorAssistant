@@ -62,7 +62,12 @@ if [[ -z "$funnel_host" || "$funnel_host" == "null" ]]; then
 fi
 
 export APP_ORIGIN=${MORASSISTANT_PANEL_ORIGIN:-https://morassistant-onshape.netlify.app}
-export ONSHAPE_REDIRECT_URI="https://${funnel_host}/oauth/onshape/callback"
+if [[ "$APP_ORIGIN" == "https://morassistant-onshape.netlify.app" ]]; then
+  oauth_origin=$APP_ORIGIN
+else
+  oauth_origin="https://${funnel_host}"
+fi
+export ONSHAPE_REDIRECT_URI="${MORASSISTANT_OAUTH_ORIGIN:-$oauth_origin}/oauth/onshape/callback"
 export SESSION_SECRET=$(keychain_ensure_random com.morassistant.session-secret hex)
 export SESSION_ENCRYPTION_KEY=$(keychain_ensure_random com.morassistant.session-encryption-key base64)
 export INSTALLATION_TOKEN=$(keychain_ensure_random com.morassistant.installation-token hex)

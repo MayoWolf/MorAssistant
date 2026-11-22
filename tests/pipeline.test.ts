@@ -145,6 +145,11 @@ describe("installed Onshape extension pipeline", () => {
     expect(loginResponse.status).toBe(200);
     expect(await loginResponse.json()).toMatchObject({ type: "chatgptDeviceCode", userCode: "MOR-TEST" });
     await waitForCodex();
+    const connected = await fetch(`${appOrigin}/api/status`, { headers: sessionHeaders() }).then((response) => response.json());
+    expect(connected).toMatchObject({
+      codexRuntime: { model: "gpt-6.2-sol", reasoningEffort: "high", available: true },
+      codexModels: expect.arrayContaining([{ model: "gpt-6.2-astra", label: "GPT-6.2 Astra", defaultEffort: "medium", efforts: ["medium"] }])
+    });
 
     const context = {
       documentId: "document",
@@ -169,10 +174,13 @@ describe("installed Onshape extension pipeline", () => {
       }
     });
 
+    const targets = await fetch(`${appOrigin}/api/context/targets?${new URLSearchParams(context)}`, { headers: sessionHeaders() });
+    expect(await targets.json()).toMatchObject({ targets: [{ id: "f1", name: "Extrude 1" }] });
+
     const jobStart = await fetch(`${appOrigin}/api/plan-jobs`, {
       method: "POST",
       headers: sessionHeaders({ origin: appOrigin, "content-type": "application/json" }),
-      body: JSON.stringify({ prompt: "Preview a clearer feature name", context })
+      body: JSON.stringify({ prompt: "Preview a clearer feature name", context, model: "gpt-6.2-astra", effort: "medium", targetIds: ["f1"] })
     });
     expect(jobStart.status).toBe(202);
     const { id: jobId } = await jobStart.json() as { id: string };
@@ -192,10 +200,15 @@ describe("installed Onshape extension pipeline", () => {
       status: "completed",
       progress: expect.arrayContaining([
         expect.objectContaining({ kind: "reasoning" }),
+        expect.objectContaining({ kind: "inspection", message: "Checked Onshape target: f1" }),
         expect.objectContaining({ kind: "research", message: expect.stringContaining("Research complete") }),
         expect.objectContaining({ kind: "validation" })
       ]),
-      plan: { status: "pending", sources: [], agentTrace: { planningAttempts: 1, featureCount: 1 } }
+      plan: {
+        status: "pending", sources: [], message: "Read the attached Extrude 1 payload.",
+        agentTrace: { planningAttempts: 1, featureCount: 1, continuedConversation: true,
+          runtime: { model: "gpt-6.2-astra", reasoningEffort: "medium" } }
+      }
     });
 
     const planResponse = await fetch(`${appOrigin}/api/plans`, {

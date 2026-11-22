@@ -40,7 +40,10 @@ import {
   type PartStudioGeometryEvidence,
   type OnshapeTokens
 } from "@morassistant/onshape-client";
-import type { OnshapeElementContext, OnshapeElementType, PartStudioContext } from "@morassistant/shared-types";
+import {
+  CODEX_EFFORTS, DEFAULT_CODEX_EFFORT, DEFAULT_CODEX_MODEL,
+  type CadTarget, type CodexModelOption, type OnshapeElementContext, type OnshapeElementType, type PartStudioContext
+} from "@morassistant/shared-types";
 import { SessionStore, type UserSession } from "./session-store.js";
 
 const repositoryRoot = fileURLToPath(new URL("../../../", import.meta.url));
@@ -62,9 +65,9 @@ const envSchema = z.object({
   ONSHAPE_BASE_URL: z.string().url().default("https://cad.onshape.com"),
   ONSHAPE_API_VERSION: z.string().default("v16"),
   FRC_DESIGN_BASE_URL: z.string().url().default("https://app.frcdesign.org"),
-  ONSHAPE_SNAPSHOT_FRESH_MS: z.coerce.number().int().min(0).max(3_600_000).default(5 * 60_000),
-  CODEX_MODEL: z.string().min(1).optional(),
-  CODEX_REASONING_EFFORT: z.enum(["none", "minimal", "low", "medium", "high", "xhigh"]).optional(),
+  ONSHAPE_SNAPSHOT_FRESH_MS: z.coerce.number().int().min(0).max(3_600_000).default(15_000),
+  CODEX_MODEL: z.string().min(1).default(DEFAULT_CODEX_MODEL),
+  CODEX_REASONING_EFFORT: z.enum(CODEX_EFFORTS).default(DEFAULT_CODEX_EFFORT),
   CODEX_COMMAND: z.string().default("codex"),
   CODEX_USERS_ROOT: z.string().default(resolve(repositoryRoot, "data/codex-users")),
   CODEX_MAX_WORKERS: z.coerce.number().int().min(1).max(100).default(4),
@@ -323,17 +326,66 @@ function pruneGeometryCache(now = Date.now()): void {
 
 const planRequestSchema = z.object({
   prompt: z.string().trim().min(3).max(4_000),
-  context: z.unknown()
+  context: z.unknown(),
+  model: z.string().trim().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u).optional(),
+  effort: z.enum(CODEX_EFFORTS).optional(),
+  targetIds: z.array(z.string().min(1).max(128)).max(12).optional()
 }).strict();
 
-function parsePlanRequest(value: unknown): { prompt: string; context: OnshapeElementContext } {
+type PlanRequest = Omit<z.infer<typeof planRequestSchema>, "context"> & { context: OnshapeElementContext };
+
+function parsePlanRequest(value: unknown): PlanRequest {
   const input = planRequestSchema.parse(value);
-  return { prompt: input.prompt, context: parseContext(input.context) };
+  return { ...input, context: parseContext(input.context) };
+}
+
+function partStudioTargets(tree: FeatureListResponse): CadTarget[] {
+  return tree.features.map((feature) => ({
+    id: feature.featureId, name: feature.name || feature.featureId, type: feature.featureType ?? "Feature"
+  }));
+}
+
+function assemblyTargets(inspection: AssemblyInspection): CadTarget[] {
+  return inspection.instances.map(({ id, name, type }) => ({ id, name, type }));
+}
+
+function planningThreadKey(snapshotKey: string): string {
+  return createHash("sha256").update(`tool-planner-v1:${snapshotKey}`).digest("hex");
+}
+
+function planningConversation(session: UserSession, snapshotKey: string, input: PlanRequest, choices: CadTarget[]) {
+  const threadKey = planningThreadKey(snapshotKey);
+  const targets = [...new Set(input.targetIds)].map((id) => {
+    const target = choices.find((item) => item.id === id);
+    if (!target) throw new HttpError(409, "An attached target is no longer in this tab. Refresh the target list and choose it again.");
+    return target;
+  });
+  const priorTurns = [...session.plans.values()]
+    .filter((candidate) => elementContextKey(candidate.context) === snapshotKey)
+    .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt))
+    .slice(-8)
+    .map((candidate) => ({
+      prompt: candidate.prompt,
+      summary: candidate.summary,
+      ...(candidate.message ? { message: candidate.message } : {}),
+      status: candidate.status,
+      ...(candidate.result ? { outcome: candidate.result.operations.map((operation) =>
+        `${operation.status}: ${operation.message}`).join("\n").slice(0, 1_000) } : {})
+    }));
+  const threadId = session.codexThreads.get(threadKey);
+  return { threadKey, options: {
+    ...(threadId ? { threadId } : {}),
+    preferences: {
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.effort ? { effort: input.effort } : {})
+    },
+    targets, priorTurns
+  } };
 }
 
 async function createStoredAssemblyPlan(
   session: UserSession,
-  body: { prompt: string; context: OnshapeElementContext },
+  body: PlanRequest,
   snapshotKey: string,
   recoveryForPlanId?: string,
   onProgress?: PlanningProgressCallback
@@ -342,7 +394,8 @@ async function createStoredAssemblyPlan(
   const storedSnapshot = session.assemblySnapshots.get(snapshotKey);
   let usedStoredSnapshot = false;
   let rateLimitFallback = false;
-  const definitionPromise = storedSnapshot && Date.now() - storedSnapshot.capturedAt <= env.ONSHAPE_SNAPSHOT_FRESH_MS
+  const definitionPromise = storedSnapshot && !recoveryForPlanId && !body.targetIds?.length
+    && Date.now() - storedSnapshot.capturedAt <= env.ONSHAPE_SNAPSHOT_FRESH_MS
     ? Promise.resolve(storedSnapshot.definition).then((definition) => {
       usedStoredSnapshot = true;
       return definition;
@@ -380,21 +433,9 @@ async function createStoredAssemblyPlan(
       ...(candidatesResult.warning ? [candidatesResult.warning] : [])
     ]
   };
-  const priorTurns = [...session.plans.values()]
-    .filter((candidate) => elementContextKey(candidate.context) === snapshotKey)
-    .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt))
-    .slice(-12)
-    .map((candidate) => ({
-      prompt: candidate.prompt,
-      summary: candidate.summary,
-      ...(candidate.message ? { message: candidate.message } : {}),
-      status: candidate.status
-    }));
-  const planning = await workers.forUser(session.id).createPlan(body.prompt, inspection, onProgress, {
-    ...(session.codexThreads.get(snapshotKey) ? { threadId: session.codexThreads.get(snapshotKey)! } : {}),
-    priorTurns
-  });
-  session.codexThreads.set(snapshotKey, planning.threadId);
+  const { threadKey, options } = planningConversation(session, snapshotKey, body, assemblyTargets(inspection));
+  const planning = await workers.forUser(session.id).createPlan(body.prompt, inspection, onProgress, options);
+  session.codexThreads.set(threadKey, planning.threadId);
   const plan = cadPlanSchema.parse(planning.plan);
   validatePlanAgainstAssembly(plan, inspection);
   const stored: StoredCadPlan = {
@@ -438,9 +479,26 @@ async function createStoredAssemblyPlan(
   return stored;
 }
 
+const activePlanningSessions = new Set<string>();
+
 async function createStoredPlan(
   session: UserSession,
-  body: { prompt: string; context: OnshapeElementContext },
+  body: PlanRequest,
+  recoveryForPlanId?: string,
+  onProgress?: PlanningProgressCallback
+): Promise<StoredCadPlan> {
+  if (activePlanningSessions.has(session.id)) throw new HttpError(409, "A CAD turn is already running.");
+  activePlanningSessions.add(session.id);
+  try {
+    return await planFromWorkspace(session, body, recoveryForPlanId, onProgress);
+  } finally {
+    activePlanningSessions.delete(session.id);
+  }
+}
+
+async function planFromWorkspace(
+  session: UserSession,
+  body: PlanRequest,
   recoveryForPlanId?: string,
   onProgress?: PlanningProgressCallback
 ): Promise<StoredCadPlan> {
@@ -455,7 +513,8 @@ async function createStoredPlan(
   let usedStoredSnapshot = false;
   let rateLimitFallback = false;
   let featureTree: FeatureListResponse;
-  if (storedSnapshot && Date.now() - storedSnapshot.capturedAt <= env.ONSHAPE_SNAPSHOT_FRESH_MS) {
+  if (storedSnapshot && !recoveryForPlanId && !body.targetIds?.length
+    && Date.now() - storedSnapshot.capturedAt <= env.ONSHAPE_SNAPSHOT_FRESH_MS) {
     featureTree = storedSnapshot.tree;
     usedStoredSnapshot = true;
   } else {
@@ -506,21 +565,9 @@ async function createStoredPlan(
   if (!usedStoredSnapshot || !storedSnapshot?.geometry) {
     storePartStudioSnapshot(session, snapshotKey, featureTree, geometryEvidence(rawInspection));
   }
-  const priorTurns = [...session.plans.values()]
-    .filter((candidate) => elementContextKey(candidate.context) === snapshotKey)
-    .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt))
-    .slice(-12)
-    .map((candidate) => ({
-      prompt: candidate.prompt,
-      summary: candidate.summary,
-      ...(candidate.message ? { message: candidate.message } : {}),
-      status: candidate.status
-    }));
-  const planning = await workers.forUser(session.id).createPlan(body.prompt, inspection, onProgress, {
-    ...(session.codexThreads.get(snapshotKey) ? { threadId: session.codexThreads.get(snapshotKey)! } : {}),
-    priorTurns
-  });
-  session.codexThreads.set(snapshotKey, planning.threadId);
+  const { threadKey, options } = planningConversation(session, snapshotKey, body, partStudioTargets(featureTree));
+  const planning = await workers.forUser(session.id).createPlan(body.prompt, inspection, onProgress, options);
+  session.codexThreads.set(threadKey, planning.threadId);
   const plan = cadPlanSchema.parse(planning.plan);
   validatePlanAgainstIntent(body.prompt, validatePlanAgainstFeatureTree(plan, featuresWithHashes(featureTree.features)));
   if (body.context.configuration && plan.operations.some((operation) => operation.type === "update_dimension")) {
@@ -1030,13 +1077,15 @@ app.get("/api/status", async (request, reply) => {
       request.log.warn(logError(error), "Onshape access refresh failed");
     });
   }
-  let codex: "connected" | "pending" | "disconnected" = session.codexLoginId ? "pending" : "disconnected";
+  let codex: "connected" | "pending" | "disconnected" = session.codexLogin ? "pending" : "disconnected";
   let codexRuntime: CodexRuntimeStatus | undefined;
-  if (!session.codexLoginId && (session.codexConnected || env.INSTALLATION_TOKEN)) {
+  let codexModels: CodexModelOption[] | undefined;
+  if (!session.codexLogin && (session.codexConnected || env.INSTALLATION_TOKEN)) {
     try {
       const worker = workers.forUser(session.id);
       if (await worker.accountStatus() === "connected") {
         codex = "connected";
+        codexModels = await worker.listModels();
         codexRuntime = await worker.runtimeStatus();
         if (!session.codexConnected) {
           session.codexConnected = true;
@@ -1053,7 +1102,9 @@ app.get("/api/status", async (request, reply) => {
   return {
     onshape: session.onshapeTokens ? "connected" : "disconnected",
     codex,
-    ...(codexRuntime ? { codexRuntime } : {})
+    ...(session.codexLogin ? { deviceLogin: session.codexLogin } : {}),
+    ...(codexRuntime ? { codexRuntime } : {}),
+    ...(codexModels ? { codexModels } : {})
   };
 });
 
@@ -1129,7 +1180,7 @@ app.get("/oauth/onshape/callback", async (request, reply) => {
 
 app.post("/api/codex/connect", async (request, reply) => {
   const session = getSession(request, reply);
-  if (session.codexLoginId) return reply.code(409).send({ error: "A Codex sign-in is already pending." });
+  if (session.codexLogin) return session.codexLogin;
   if (session.codexConnected) return reply.code(409).send({ error: "Codex is already connected." });
   const worker = workers.forUser(session.id);
   let login;
@@ -1139,15 +1190,15 @@ app.post("/api/codex/connect", async (request, reply) => {
     workers.stopForUser(session.id);
     throw error;
   }
-  session.codexLoginId = login.loginId;
+  session.codexLogin = login;
   void worker.waitForLogin(login.loginId).then((success) => {
-    delete session.codexLoginId;
+    delete session.codexLogin;
     if (success) {
       session.codexConnected = true;
       saveSession(session);
     }
   }).catch((error) => {
-    delete session.codexLoginId;
+    delete session.codexLogin;
     request.log.warn(logError(error), "Codex device login did not complete");
   });
   return login;
@@ -1178,8 +1229,18 @@ app.get("/api/conversation", async (request, reply) => {
     .slice(-50);
   return {
     plans,
-    hasPersistentContext: session.codexThreads.has(contextKey)
+    hasPersistentContext: session.codexThreads.has(planningThreadKey(contextKey)) || session.codexThreads.has(contextKey)
   };
+});
+
+app.get("/api/context/targets", async (request, reply) => {
+  const session = getSession(request, reply);
+  const context = await resolveElementContext(session, parseContext(request.query));
+  const client = clientFor(session, context);
+  const targets = context.elementType === "ASSEMBLY"
+    ? assemblyTargets(await client.inspectAssembly(context))
+    : partStudioTargets(await client.listFeatures(context));
+  return { targets };
 });
 
 app.post("/api/plans", async (request, reply) => {
@@ -1193,7 +1254,7 @@ app.post("/api/plan-jobs", async (request, reply) => {
   const session = getSession(request, reply);
   const body = parsePlanRequest(request.body);
   prunePlanJobs();
-  if ([...planJobs.values()].some((job) => job.sessionId === session.id && job.status === "planning")) {
+  if (activePlanningSessions.has(session.id)) {
     return reply.code(409).send({ error: "A CAD plan is already being created for this session." });
   }
 
@@ -1244,7 +1305,7 @@ app.post("/api/plans/:id/recovery-jobs", async (request, reply) => {
   const existing = [...session.plans.values()].find((candidate) => candidate.recoveryForPlanId === failedPlan.id);
   if (existing) return { id: randomUUID(), status: "completed", plan: existing };
   prunePlanJobs();
-  if ([...planJobs.values()].some((job) => job.sessionId === session.id && job.status === "planning")) {
+  if (activePlanningSessions.has(session.id)) {
     return reply.code(409).send({ error: "A CAD plan is already being created for this session." });
   }
   const job: PlanJob = {
@@ -1255,9 +1316,12 @@ app.post("/api/plans/:id/recovery-jobs", async (request, reply) => {
     progress: [{ id: "inspection", kind: "inspection", message: "Re-reading the changed Onshape model for recovery.", at: Date.now() }]
   };
   planJobs.set(job.id, job);
+  const runtime = failedPlan.agentTrace?.runtime;
+  const effort = CODEX_EFFORTS.find((candidate) => candidate === runtime?.reasoningEffort);
   void createStoredPlan(
     session,
-    { prompt: recoveryPrompt(failedPlan), context: failedPlan.context },
+    { prompt: recoveryPrompt(failedPlan), context: failedPlan.context,
+      ...(runtime?.model ? { model: runtime.model } : {}), ...(effort ? { effort } : {}) },
     failedPlan.id,
     (progress) => updatePlanJobProgress(job, progress)
   ).then((plan) => {

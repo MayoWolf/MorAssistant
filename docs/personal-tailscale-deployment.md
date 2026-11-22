@@ -34,12 +34,12 @@ The script:
 7. enables a background Funnel to port 3000;
 8. verifies both local and public health endpoints.
 
-The printed callback must exactly match the callback registered in Onshape. Set the printed HTTPS origin as the destination of Netlify's `/api/*` proxy rule. Keep `VITE_API_ORIGIN` set to the Netlify panel origin so iframe requests remain same-origin in the browser.
+The printed callback must exactly match the callback registered in Onshape. The personal site proxies `/api/*` and `/oauth/onshape/*` to Funnel. If its hostname changes, update those proxy destinations and deploy from GitHub. The OAuth callback registered in Onshape can keep the same Netlify URL.
 
 Personal deployments use the Keychain item `com.morassistant.installation-token` to bind the private Onshape extension, OAuth grant, and Codex worker to one owner session without relying on third-party cookies. Put that token in the OAuth URL query and the extension action URL fragment. URL fragments are not sent to Netlify:
 
 ```text
-OAuth URL: https://YOUR-FUNNEL-HOST/oauth/onshape/start?installationToken=YOUR_TOKEN
+OAuth URL: https://morassistant-onshape.netlify.app/oauth/onshape/start?installationToken=YOUR_TOKEN
 Action URL: https://morassistant-onshape.netlify.app/?documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}#installationToken=YOUR_TOKEN
 ```
 
