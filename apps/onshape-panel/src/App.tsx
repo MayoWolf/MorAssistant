@@ -4,7 +4,7 @@ import { FlatLayout } from "./FlatLayout.js";
 import {
   DEFAULT_CODEX_EFFORT, DEFAULT_CODEX_MODEL,
   type CadTarget, type CodexEffort, type ConnectionStatus, type DeviceCodeLogin, type OnshapeElementContext, type OnshapeElementType,
-  type PlanningJobStatus, type PlanningProgress
+  type PlanningJobStatus, type PlanningProgress, type PlanningUsage
 } from "@morassistant/shared-types";
 
 const emptyStatus: ConnectionStatus = { onshape: "disconnected", codex: "disconnected" };
@@ -54,7 +54,8 @@ type PlanJobResponse = {
   lastActivityAt?: number;
   deadlineAt?: number;
   finishedAt?: number;
-  reportedTokens?: number;
+  usage?: PlanningUsage;
+  tokenLimit?: number;
   plan?: StoredCadPlan;
   error?: string;
 };
@@ -205,6 +206,7 @@ function LiveActivity({ job, startedAt, reconnecting, stopPending, onStop }: {
   const label = reconnecting ? "Reconnecting to the backend" : stopping ? "Stopping request"
     : job?.status === "completed" ? "Planning complete"
     : job?.status === "timed_out" ? "Request timed out"
+    : job?.status === "token_limit" ? "Stopped at token threshold"
     : job?.status === "cancelled" ? "Request stopped"
     : job?.status === "failed" ? "Request failed"
     : silence >= 25_000 ? "Waiting for an update"
@@ -219,9 +221,10 @@ function LiveActivity({ job, startedAt, reconnecting, stopPending, onStop }: {
     <div className="activity-metrics">
       <span>{formatDuration(duration)} elapsed{job?.deadlineAt ? ` · ${formatDuration(job.deadlineAt - started)} limit` : ""}</span>
       {running && <span>Last update {formatDuration(silence)} ago</span>}
-      <span>{job?.reportedTokens !== undefined
-        ? `${job.reportedTokens.toLocaleString()} tokens · latest reported model call`
-        : "Token count unavailable so far"}</span>
+      <span>{job?.usage
+        ? `${job.usage.totalTokens.toLocaleString()} reported tokens · ${job.usage.cachedInputTokens.toLocaleString()} cached input`
+        : "No token usage reported yet"}</span>
+      {job?.tokenLimit !== undefined && <span title="Codex reports usage after model calls, so the threshold can be exceeded by an in-flight call.">{job.tokenLimit.toLocaleString()}-token stop threshold</span>}
     </div>
     {job?.error && <p className="activity-error">{job.error}</p>}
     {latest && <p className="latest-activity">{latest.message}</p>}
@@ -343,6 +346,7 @@ function PlanCard({
         ? `${plan.agentTrace.instanceCount ?? 0} instances · ${plan.agentTrace.featureCount} assembly features`
         : `${plan.agentTrace.featureCount} features · ${plan.agentTrace.nativeFeatureTypeCount ?? 0} live feature types`}
         {` · ${plan.agentTrace.planningAttempts} validation pass${plan.agentTrace.planningAttempts === 1 ? "" : "es"}`}</p>
+      {plan.agentTrace.usage && <p>{plan.agentTrace.usage.totalTokens.toLocaleString()} reported tokens across this request · {plan.agentTrace.usage.cachedInputTokens.toLocaleString()} cached input. This is usage, not a billing estimate.</p>}
       {plan.agentTrace.inspectionWarnings?.map((warning) => <p key={warning}>{warning}</p>)}
     </details>}
   </section>;

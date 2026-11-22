@@ -4,8 +4,10 @@ import {
   featureFingerprint,
   selectOnshapeCapabilities,
   type AssemblyInspection,
+  type OnshapeFeature,
   type PartStudioInspection
 } from "@morassistant/onshape-client";
+import { boundedRecords, jsonBytes } from "./turn-budget.js";
 
 const querySchema = {
   type: "object",
@@ -33,6 +35,28 @@ function matches(query: string, id: string, name: string): boolean {
   return id === query || name.toLowerCase().includes(query.toLowerCase());
 }
 
+const asRecord = (value: unknown): Record<string, unknown> | undefined =>
+  value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+
+export function sketchGeometry(feature: OnshapeFeature) {
+  if (feature.featureType !== "newSketch" || !Array.isArray(feature.entities)) return undefined;
+  return boundedRecords(feature.entities.flatMap<Record<string, unknown>>((value) => {
+    const entity = asRecord(value);
+    if (!entity || entity.isConstruction === true) return [];
+    const geometry = asRecord(entity.geometry);
+    if (geometry?.btType === "BTCurveGeometryCircle-115") {
+      return [{ kind: "circleOrArc", xM: geometry.xCenter, yM: geometry.yCenter, radiusM: geometry.radius }];
+    }
+    if (geometry?.btType === "BTCurveGeometryLine-117") {
+      return [{ kind: "line", xM: geometry.pntX, yM: geometry.pntY, dx: geometry.dirX, dy: geometry.dirY, startM: entity.startParam, endM: entity.endParam }];
+    }
+    if (entity.btType === "BTMSketchTextEntity-1761") {
+      return [{ kind: "text", text: entity.text, xM: entity.baselineStartX, yM: entity.baselineStartY, heightM: entity.ascent }];
+    }
+    return [];
+  }), 680, 6);
+}
+
 export function readPlanningEvidence(
   inspection: PartStudioInspection | AssemblyInspection,
   tool: string,
@@ -43,10 +67,10 @@ export function readPlanningEvidence(
     const assembly = "elementType" in inspection;
     const relevant = ranked.filter((entry) => assembly
       ? entry.surface === "assembly" || entry.execution === "read_only"
-      : entry.surface !== "assembly").slice(0, 6);
-    const exactSpecs = assembly ? [] : compactFeatureSpecContext(inspection.featureSpecs, [], 38_000, query).relevantFeatureSpecs;
+      : entry.surface !== "assembly").slice(0, 3);
+    const exactSpecs = assembly ? [] : compactFeatureSpecContext(inspection.featureSpecs, [], 2_400, query).relevantFeatureSpecs;
     const relatedSpecs = assembly || exactSpecs.length > 0 ? []
-      : compactFeatureSpecContext(inspection.featureSpecs, relevant, 38_000).relevantFeatureSpecs;
+      : compactFeatureSpecContext(inspection.featureSpecs, relevant, 2_400).relevantFeatureSpecs;
     return {
       capabilities: relevant,
       exactSpecs,
@@ -63,10 +87,14 @@ export function readPlanningEvidence(
       const instances = exact ? [exact] : inspection.instances.filter((item) => matches(query, item.id, item.name)).slice(0, 8);
       const ids = new Set(instances.map((item) => item.id));
       return {
-        instances,
-        occurrences: inspection.occurrences.filter((item) => ids.has(item.path[0] ?? "")).slice(0, 24),
-        mates: inspection.features.filter((item) => matches(query, item.id, item.name)
-          || item.occurrencePaths.some((path) => ids.has(path[0] ?? ""))).slice(0, 24)
+        instances: boundedRecords(instances, 1_900, 6),
+        trustedComponentSources: boundedRecords(inspection.trustedSources.filter((source) => instances.some((instance) =>
+          instance.documentId === source.documentId && instance.elementId === source.elementId &&
+          instance.partId === source.partId && instance.configuration === source.configuration &&
+          instance.documentVersion === source.versionId && instance.documentMicroversion === source.microversionId)), 950, 3),
+        occurrences: boundedRecords(inspection.occurrences.filter((item) => ids.has(item.path[0] ?? "")), 1_550, 6),
+        mates: boundedRecords(inspection.features.filter((item) => matches(query, item.id, item.name)
+          || item.occurrencePaths.some((path) => ids.has(path[0] ?? ""))), 1_200, 8)
       };
     }
     const features = inspection.featureTree.features;
@@ -79,13 +107,14 @@ export function readPlanningEvidence(
     const dependency = inspection.dependencies.find((item) => item.featureId === feature!.featureId);
     return {
       featureHash: featureFingerprint(feature!),
-      dependency,
-      feature: JSON.stringify(feature).length <= 48_000 ? feature : {
+      dependency: dependency && { ...dependency, dependsOn: dependency.dependsOn.slice(0, 10), usedBy: dependency.usedBy.slice(0, 10), usedByCount: dependency.usedBy.length },
+      feature: jsonBytes(feature) <= 3_500 ? feature : {
         featureId: feature!.featureId,
         name: feature!.name,
         featureType: feature!.featureType,
-        parameterIds: feature!.parameters?.slice(0, 100).map((parameter) => parameter.parameterId),
-        note: "Full payload exceeds the response budget."
+        parameters: boundedRecords((feature!.parameters ?? []).map(({ parameterId, expression, value }) => ({ parameterId, expression, value })), 800, 12),
+        geometry: sketchGeometry(feature!),
+        note: "Large feature: this is a summary, not a valid replacement payload. Preserve the feature or use a typed edit."
       }
     };
   }

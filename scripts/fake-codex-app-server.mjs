@@ -19,7 +19,7 @@ function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
-function planFromInput(params, earlierTurns = []) {
+function planFromInput(params) {
   const text = params?.input?.find((item) => item?.type === "text")?.text ?? "";
   const assemblyMarker = "Current Assembly model snapshot:\n";
   const partStudioMarker = "Current Part Studio model snapshot:\n";
@@ -28,6 +28,8 @@ function planFromInput(params, earlierTurns = []) {
   const model = markerIndex >= 0 ? JSON.parse(text.slice(markerIndex + marker.length)) : { features: [] };
   const snapshot = model.features ?? [];
   const requestStart = text.indexOf("User request:\n");
+  const recap = text.match(/^Conversation and attached targets:\n([^\n]+)$/mu)?.[1];
+  const earlierTurns = recap ? JSON.parse(recap).recentVisibleTurns ?? [] : [];
   const userRequest = text.slice(requestStart >= 0 ? requestStart + "User request:\n".length : 0, markerIndex >= 0 ? markerIndex : undefined);
   if (marker === assemblyMarker) {
     if (/what did we just|what have we done|summarize (?:our|the) conversation/i.test(userRequest)) {
@@ -84,11 +86,15 @@ function planFromInput(params, earlierTurns = []) {
       requiresApproval: true
     };
   }
-  if (!model.capabilityCatalog?.completeInventory?.includes("sketch_geometry:") ||
-      !model.capabilityCatalog?.relevantCurriculum?.includes("requires:") ||
-      !model.liveNativeFeatures?.availableFeatureTypes?.some((entry) => entry.featureType === "chamfer") ||
-      !model.liveNativeFeatures?.relevantFeatureSpecs?.some((entry) => ["extrude", "newSketch"].includes(entry.featureType))) {
-    throw new Error("The fake planner did not receive the complete Onshape curriculum and live feature specifications.");
+  if (!Array.isArray(model.capabilityCatalog?.relevant) || !model.note?.includes("lookup_onshape_tool") ||
+      "geometryEvidence" in model || "dependencyGraph" in model || model.capabilityCatalog?.completeInventory ||
+      model.features.some((feature) => "featureJson" in feature)) {
+    throw new Error("The fake planner did not receive the compact CAD context.");
+  }
+  if (/measure compact payload/iu.test(userRequest)) {
+    if (!model.features.some((feature) => feature.name === "Named Budget Target")) throw new Error("Compact context omitted a named target.");
+    return { summary: `Compact test: ${Buffer.byteLength(text)} bytes; ${model.features.length} of ${model.totalFeatures} features`,
+      risk: "low", operations: [], warnings: [], requiresApproval: true };
   }
   if (/engrave "MORTORQ"/iu.test(userRequest)) {
     if (!text.includes("Never present an unmarked generic disk") ||
@@ -125,7 +131,7 @@ function planFromInput(params, earlierTurns = []) {
     };
   }
   if (/self-correct/i.test(userRequest) && !/previous proposed plan failed trusted-host validation/i.test(userRequest)) {
-    const feature = snapshot[0];
+    const feature = snapshot.find((item) => item.featureId === "f1") ?? snapshot[0];
     return {
       summary: "Deliberately invalid first attempt",
       risk: "low",
@@ -141,7 +147,7 @@ function planFromInput(params, earlierTurns = []) {
     };
   }
   if (/Create a recovery plan for a partially executed Onshape request/i.test(userRequest)) {
-    const feature = snapshot[0];
+    const feature = snapshot.find((item) => item.featureId === "f1") ?? snapshot[0];
     return {
       summary: "Recover the failed base feature without repeating successful work",
       risk: "low",
@@ -157,7 +163,7 @@ function planFromInput(params, earlierTurns = []) {
     };
   }
   if (/trigger regeneration recovery/i.test(userRequest)) {
-    const feature = snapshot[0];
+    const feature = snapshot.find((item) => item.featureId === "f1") ?? snapshot[0];
     return {
       summary: "Trigger the deterministic regeneration recovery fixture",
       risk: "low",
@@ -173,7 +179,7 @@ function planFromInput(params, earlierTurns = []) {
     };
   }
   if (/chamfer curriculum/i.test(userRequest)) {
-    const target = snapshot[0];
+    const target = snapshot.find((item) => item.featureId === "f1") ?? snapshot[0];
     return {
       summary: `Chamfer edges created by ${target.name}`,
       risk: "medium",
@@ -220,7 +226,8 @@ function planFromInput(params, earlierTurns = []) {
     };
   }
   if (/extrude/i.test(userRequest)) {
-    const sketch = snapshot.find((item) => item?.featureType === "newSketch");
+    const sketch = snapshot.find((item) => item?.featureType === "newSketch" && /10 mm/i.test(item.name)) ??
+      snapshot.find((item) => item?.featureType === "newSketch");
     if (!sketch?.name) throw new Error("The fake planner needs a sketch to extrude.");
     const featureName = `${sketch.name} Extrude`;
     return {
@@ -274,7 +281,7 @@ function planFromInput(params, earlierTurns = []) {
       requiresApproval: true
     };
   }
-  const feature = snapshot[0];
+  const feature = snapshot.find((item) => item.featureId === "f1") ?? snapshot[0];
   if (!feature?.featureId || !feature?.name) throw new Error("The fake planner needs one named feature.");
   const parameter = feature.parameters?.[0];
   if (/depth|dimension/i.test(userRequest) && parameter?.parameterId && parameter?.expression) {
@@ -377,16 +384,16 @@ lines.on("line", (line) => {
         if (request.params?.sandbox !== "read-only") {
           throw new Error("thread/start must use the Codex SandboxMode spelling read-only");
         }
-        if (request.params?.config?.web_search !== "live") {
-          throw new Error("thread/start must enable live first-party web search");
+        if (!["live", "cached"].includes(request.params?.config?.web_search)) {
+          throw new Error("thread/start must use a supported web search mode");
         }
         const instructions = String(request.params?.baseInstructions);
         if (!instructions.includes("Wheel circles therefore belong on the Front plane") &&
             !instructions.includes("insert_assembly_component creates one new top-level instance")) {
           throw new Error("thread/start must teach the active Part Studio or Assembly coordinate model");
         }
-        if (request.params?.ephemeral !== false) {
-          throw new Error("thread/start must persist the conversation rollout");
+        if (request.params?.ephemeral !== true) {
+          throw new Error("Planning must not replay a persistent Codex rollout");
         }
         if (!request.params?.dynamicTools?.some((tool) => tool.name === "inspect_onshape_target")) {
           throw new Error("thread/start must register Onshape inspection tools");
@@ -408,23 +415,9 @@ lines.on("line", (line) => {
         });
         break;
       }
-      case "thread/resume": {
-        const id = request.params?.threadId;
-        if (!threads.has(id)) throw new Error(`Unknown saved thread ${id}`);
-        if (request.params?.config?.web_search !== "live") throw new Error("thread/resume must preserve live web search");
-        send({
-          id: request.id,
-          result: {
-            thread: { id },
-            model: request.params?.model ?? "gpt-6.2-sol",
-            modelProvider: "openai",
-            reasoningEffort: null,
-            serviceTier: null,
-            approvalPolicy: "never",
-            sandbox: { type: "readOnly", networkAccess: false },
-            cwd: request.params?.cwd ?? process.cwd()
-          }
-        });
+      case "thread/unsubscribe": {
+        threads.delete(request.params?.threadId);
+        send({ id: request.id, result: { status: "unsubscribed" } });
         break;
       }
       case "turn/start": {
@@ -436,18 +429,19 @@ lines.on("line", (line) => {
         }
         const expectedEffort = request.params?.model === "gpt-6.2-astra" ? "medium" : "high";
         if (request.params?.effort !== expectedEffort) throw new Error("turn/start must use the selected reasoning effort");
-        if (request.params?.summary !== "detailed") throw new Error("turn/start must request detailed reasoning summaries");
+        if (request.params?.summary !== "concise") throw new Error("turn/start must request concise reasoning summaries");
         const thread = threads.get(request.params?.threadId);
-        if (!thread) throw new Error("turn/start must target a started or resumed persistent thread");
+        if (!thread || thread.turns.length !== 0) throw new Error("Each attempt must start in a fresh thread.");
         const id = `turn-${++turnCounter}`;
-        const planned = planFromInput(request.params, thread.turns);
+        const planned = planFromInput(request.params);
         const plan = { ...planned, message: planned.message ?? planned.summary, sources: [] };
         const userText = request.params?.input?.find((entry) => entry?.type === "text")?.text ?? "";
         thread.turns.push(userText);
         send({ id: request.id, result: { turn: { id, status: "inProgress", items: [], error: null } } });
-        const stall = /User request:\nHold the (silent|busy|unresponsive) planning fixture/u.exec(userText)?.[1];
-        send({ method: "thread/tokenUsage/updated", params: {
-          threadId: request.params.threadId, turnId: id, tokenUsage: { last: { totalTokens: 3210 } }
+        const stall = /User request:\nHold the (silent|busy|unresponsive|over-budget) planning fixture/u.exec(userText)?.[1];
+        const total = { totalTokens: stall === "over-budget" ? 25_000 : /high-usage repair guard/iu.test(userText) ? 21_000 : 3_210, cachedInputTokens: 900 };
+        for (let ping = 0; ping < 2; ping += 1) send({ method: "thread/tokenUsage/updated", params: {
+          threadId: request.params.threadId, turnId: id, tokenUsage: { total, last: total }
         } });
         if (stall) {
           const timer = stall === "busy" ? setInterval(() => {

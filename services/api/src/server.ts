@@ -43,7 +43,7 @@ import {
 } from "@morassistant/onshape-client";
 import {
   CODEX_EFFORTS, DEFAULT_CODEX_EFFORT, DEFAULT_CODEX_MODEL,
-  type CadTarget, type CodexModelOption, type OnshapeElementContext, type OnshapeElementType, type PartStudioContext, type PlanningJobStatus
+  type CadTarget, type CodexModelOption, type OnshapeElementContext, type OnshapeElementType, type PartStudioContext, type PlanningJobStatus, type PlanningUsage
 } from "@morassistant/shared-types";
 import { SessionStore, type UserSession } from "./session-store.js";
 
@@ -72,8 +72,9 @@ const envSchema = z.object({
   CODEX_COMMAND: z.string().default("codex"),
   CODEX_USERS_ROOT: z.string().default(resolve(repositoryRoot, "data/codex-users")),
   CODEX_MAX_WORKERS: z.coerce.number().int().min(1).max(100).default(4),
-  CAD_PLANNING_TIMEOUT_MS: z.coerce.number().int().min(100).max(8 * 60_000).default(4 * 60_000),
-  CAD_PLANNING_IDLE_MS: z.coerce.number().int().min(100).max(3 * 60_000).default(90_000),
+  CAD_PLANNING_TIMEOUT_MS: z.coerce.number().int().min(100).max(8 * 60_000).default(120_000),
+  CAD_PLANNING_IDLE_MS: z.coerce.number().int().min(100).max(3 * 60_000).default(45_000),
+  CAD_PLANNING_TOKEN_LIMIT: z.coerce.number().int().min(4_000).max(100_000).default(24_000),
   CODEX_IDLE_TIMEOUT_MS: z.coerce.number().int().min(11 * 60_000).max(3_600_000).default(15 * 60_000)
 });
 
@@ -117,7 +118,7 @@ type PlanJob = {
   deadlineAt: number;
   lastActivityAt: number;
   finishedAt?: number;
-  reportedTokens?: number;
+  usage?: PlanningUsage;
   progress: PlanningProgress[];
   plan?: StoredCadPlan;
   error?: string;
@@ -126,8 +127,9 @@ const planJobs = new Map<string, PlanJob>();
 
 function updatePlanJobProgress(job: PlanJob, progress: PlanningProgress): void {
   job.lastActivityAt = progress.at;
-  if (progress.reportedTokens !== undefined) {
-    job.reportedTokens = progress.reportedTokens;
+  if (progress.usage) {
+    job.usage = progress.usage;
+    if (job.status === "planning" && progress.usage.totalTokens >= progress.usage.limitTokens) job.status = "stopping";
     return;
   }
   if (progress.activityOnly) return;
@@ -367,12 +369,7 @@ function assemblyTargets(inspection: AssemblyInspection): CadTarget[] {
   return inspection.instances.map(({ id, name, type }) => ({ id, name, type }));
 }
 
-function planningThreadKey(snapshotKey: string): string {
-  return createHash("sha256").update(`tool-planner-v1:${snapshotKey}`).digest("hex");
-}
-
 function planningConversation(session: UserSession, snapshotKey: string, input: PlanRequest, choices: CadTarget[]) {
-  const threadKey = planningThreadKey(snapshotKey);
   const targets = [...new Set(input.targetIds)].map((id) => {
     const target = choices.find((item) => item.id === id);
     if (!target) throw new HttpError(409, "An attached target is no longer in this tab. Refresh the target list and choose it again.");
@@ -390,15 +387,14 @@ function planningConversation(session: UserSession, snapshotKey: string, input: 
       ...(candidate.result ? { outcome: candidate.result.operations.map((operation) =>
         `${operation.status}: ${operation.message}`).join("\n").slice(0, 1_000) } : {})
     }));
-  const threadId = session.codexThreads.get(threadKey);
-  return { threadKey, options: {
-    ...(threadId ? { threadId } : {}),
+  return {
+    tokenLimit: env.CAD_PLANNING_TOKEN_LIMIT,
     preferences: {
       ...(input.model ? { model: input.model } : {}),
       ...(input.effort ? { effort: input.effort } : {})
     },
     targets, priorTurns
-  } };
+  };
 }
 
 async function createStoredAssemblyPlan(
@@ -452,13 +448,12 @@ async function createStoredAssemblyPlan(
       ...(candidatesResult.warning ? [candidatesResult.warning] : [])
     ]
   };
-  const { threadKey, options } = planningConversation(session, snapshotKey, body, assemblyTargets(inspection));
+  const options = planningConversation(session, snapshotKey, body, assemblyTargets(inspection));
   signal.throwIfAborted();
   const planning = await workers.forUser(session.id).createPlan(body.prompt, inspection, onProgress, {
     ...options, signal, inactivityTimeoutMs: env.CAD_PLANNING_IDLE_MS
   });
   signal.throwIfAborted();
-  session.codexThreads.set(threadKey, planning.threadId);
   const plan = cadPlanSchema.parse(planning.plan);
   validatePlanAgainstAssembly(plan, inspection);
   const stored: StoredCadPlan = {
@@ -470,6 +465,7 @@ async function createStoredAssemblyPlan(
     createdAt: new Date().toISOString(),
     agentTrace: {
       planningAttempts: planning.attempts,
+      ...(planning.usage ? { usage: planning.usage } : {}),
       elementType: "ASSEMBLY",
       continuedConversation: planning.continuedConversation,
       runtime: {
@@ -559,7 +555,8 @@ async function planFromWorkspace(
     ? storedSnapshot?.geometry
     : undefined;
   const cachedGeometry = memoryGeometry ?? persistedGeometry;
-  const rawInspection = await client.inspectPartStudio(body.context, featureTree, cachedGeometry);
+  const needsGeometry = /\b(?:mass|volume|surface area|cent(?:roid|er of mass)|topology|inspect geometry|count (?:the )?(?:solid bodies|faces|edges|vertices))\b/iu.test(body.prompt);
+  const rawInspection = await client.inspectPartStudio(body.context, featureTree, cachedGeometry ?? (needsGeometry ? undefined : { warnings: [] }));
   pruneFeatureSpecsCache();
   const specsKey = featureSpecsCacheKey(session.id, body.context, featureTree);
   let featureSpecs = featureSpecsCache.get(specsKey)?.specs;
@@ -583,20 +580,19 @@ async function planFromWorkspace(
     ...(featureSpecs ? { featureSpecs } : {}),
     warnings: [...rawInspection.warnings, ...additionalWarnings]
   };
-  if (cacheKey && !cachedGeometry && inspection.warnings.length === 0) {
+  if (cacheKey && needsGeometry && !cachedGeometry && inspection.warnings.length === 0) {
     const evidence = geometryEvidence(inspection);
     if (JSON.stringify(evidence).length <= 750_000) geometryCache.set(cacheKey, { createdAt: Date.now(), evidence });
   }
   if (!usedStoredSnapshot || !storedSnapshot?.geometry) {
-    storePartStudioSnapshot(session, snapshotKey, featureTree, geometryEvidence(rawInspection));
+    storePartStudioSnapshot(session, snapshotKey, featureTree, cachedGeometry ?? (needsGeometry ? geometryEvidence(rawInspection) : undefined));
   }
-  const { threadKey, options } = planningConversation(session, snapshotKey, body, partStudioTargets(featureTree));
+  const options = planningConversation(session, snapshotKey, body, partStudioTargets(featureTree));
   signal.throwIfAborted();
   const planning = await workers.forUser(session.id).createPlan(body.prompt, inspection, onProgress, {
     ...options, signal, inactivityTimeoutMs: env.CAD_PLANNING_IDLE_MS
   });
   signal.throwIfAborted();
-  session.codexThreads.set(threadKey, planning.threadId);
   const plan = cadPlanSchema.parse(planning.plan);
   validatePlanAgainstIntent(body.prompt, validatePlanAgainstFeatureTree(plan, featuresWithHashes(featureTree.features)));
   if (body.context.configuration && plan.operations.some((operation) => operation.type === "update_dimension")) {
@@ -611,6 +607,7 @@ async function planFromWorkspace(
     createdAt: new Date().toISOString(),
     agentTrace: {
       planningAttempts: planning.attempts,
+      ...(planning.usage ? { usage: planning.usage } : {}),
       elementType: "PARTSTUDIO",
       continuedConversation: planning.continuedConversation,
       runtime: {
@@ -663,7 +660,8 @@ function jobStatus(job: PlanJob) {
     id: job.id, status: job.status, progress: job.progress, prompt: job.prompt, recovery: job.recovery,
     createdAt: job.createdAt, deadlineAt: job.deadlineAt, lastActivityAt: job.lastActivityAt,
     ...(job.finishedAt !== undefined ? { finishedAt: job.finishedAt } : {}),
-    ...(job.reportedTokens !== undefined ? { reportedTokens: job.reportedTokens } : {}),
+    tokenLimit: env.CAD_PLANNING_TOKEN_LIMIT,
+    ...(job.usage ? { usage: job.usage } : {}),
     ...(job.plan ? { plan: job.plan } : {}),
     ...(job.error ? { error: job.error } : {})
   };
@@ -1309,7 +1307,7 @@ app.get("/api/conversation", async (request, reply) => {
     .slice(-50);
   return {
     plans,
-    hasPersistentContext: session.codexThreads.has(planningThreadKey(contextKey)) || session.codexThreads.has(contextKey)
+    hasPersistentContext: plans.length > 0
   };
 });
 
@@ -1332,7 +1330,7 @@ app.post("/api/plans", async (request, reply) => {
     reply.code(201);
     return stored;
   } catch (error) {
-    if (error instanceof PlanningStoppedError) return reply.code(504).send({ error: error.message });
+    if (error instanceof PlanningStoppedError) return reply.code(error.status === "token_limit" ? 429 : 504).send({ error: error.message });
     throw error;
   } finally {
     clearTimeout(timer);

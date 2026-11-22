@@ -35,11 +35,17 @@ export interface PlanningProgress {
   kind: "inspection" | "reasoning" | "research" | "validation";
   message: string;
   at: number;
-  reportedTokens?: number;
+  usage?: PlanningUsage;
   activityOnly?: boolean;
 }
 
-export type PlanningJobStatus = "planning" | "stopping" | "completed" | "failed" | "cancelled" | "timed_out";
+export interface PlanningUsage {
+  totalTokens: number;
+  cachedInputTokens: number;
+  limitTokens: number;
+}
+
+export type PlanningJobStatus = "planning" | "stopping" | "completed" | "failed" | "cancelled" | "timed_out" | "token_limit";
 
 export interface CadTarget {
   id: string;

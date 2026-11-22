@@ -8,9 +8,9 @@ The central rule is simple:
 
 > The model may propose. The trusted host validates. The designer approves. Onshape decides whether the CAD rebuilds.
 
-Each user and Onshape element pair also owns one persistent Codex app-server thread. The encrypted session stores only the thread identifier and visible CAD-plan transcript; Codex rollout history stays in that user's isolated, persistent `CODEX_HOME`. Panel reloads restore the transcript, backend restarts resume the same thread, and the current Part Studio or Assembly snapshot is appended to every new turn. Conversation context therefore carries intent while Onshape remains the authority on current geometry.
+Each user and Onshape element pair owns an encrypted visible transcript. Each model attempt starts in a fresh ephemeral Codex thread with a size-bounded recap, ranked current features, and selected targets. This preserves useful recent intent without replaying old snapshots, research output, or failed plans. Existing transcripts remain readable; old Codex rollouts are not resumed.
 
-Each turn receives the selected model and reasoning effort from the account’s Codex model list, attached targets resolved against the current tab snapshot, and recent execution outcomes. Two read-only Codex tools provide operation guidance, exact feature specifications and target details from that snapshot. Existing chats retain their visible history and use it to seed a tool-enabled thread on their first upgraded turn.
+Each turn uses the selected model and reasoning effort, attached targets resolved against the current tab, and recent execution outcomes. Two read-only tools can fetch bounded operation guidance and feature or assembly details. Full workspace state stays on the trusted host for validation and is never needed in the initial model prompt.
 
 ## System map
 
@@ -85,7 +85,7 @@ Dependency edges are extracted only from references to known top-level feature I
 
 The geometry probe is a FeatureScript lambda evaluated by Onshape against the current context. Evaluation is transient. It counts solid bodies, faces, edges, and vertices; it does not insert a FeatureScript feature or persist an operation.
 
-Body-detail and mass-property calls are best-effort. If Onshape cannot calculate one source—for example, an empty Part Studio or a part with missing material density—feature-level planning remains available and the missing evidence is recorded in the plan trace.
+Body-detail, mass-property and topology probes run when the prompt calls for measured geometry. They are best-effort. A routine creation or edit can plan from the feature tree and cached evidence without waiting for three geometry API calls.
 
 Geometry evidence is cached in memory by user, element, configuration, and exact source microversion for ten minutes. The last verified feature tree and bounded geometry evidence are also persisted inside the session's AES-256-GCM encrypted payload. Repeated prompts against an unchanged model therefore avoid expensive geometry reads, and a backend restart does not discard the verified fallback. The cache is bounded and cannot cross users.
 
@@ -95,7 +95,7 @@ Onshape `429` responses honor `Retry-After` for short windows. During a longer P
 
 Codex runs in a read-only app-server turn with arbitrary command-line networking disabled and first-party live web search enabled. It receives CAD data, not OAuth credentials. Current or season-specific facts—such as 2026 FRC rules, regulation dimensions, and manufacturer specifications—are grounded in public sources, and sources actually used are returned with the plan. Its response must match one closed JSON schema with an approval-required literal.
 
-While that turn runs, the API exposes a bounded live activity stream through the background planning job: Part Studio inspection, Codex's detailed reasoning summaries, web-search start/completion events, validation corrections, and the final trusted validation result. The panel never renders raw private chain-of-thought or arbitrary tool output.
+While the turn runs, the API streams concise reasoning summaries, inspection and research events, verification and reported token usage. The panel never renders raw private chain-of-thought or arbitrary tool output.
 
 ```mermaid
 stateDiagram-v2
@@ -108,12 +108,12 @@ stateDiagram-v2
   ValidateLiveModel --> Repair: stale or invented target
   Repair --> Generate: exact validator feedback
   ValidateLiveModel --> PendingApproval: valid
-  Repair --> Failed: third invalid attempt
+  Repair --> Failed: correction invalid or budget unavailable
 ```
 
-The same planning thread gets exact trusted-host feedback and the complete model snapshot again. Repair is bounded to three total attempts. A malformed or stale plan never becomes a preview, and a planning loop cannot run indefinitely.
+The planner gets at most one correction in a fresh thread with the validator's feedback and the same compact context. It only retries when usage has been reported and leaves room. The worker tracks cumulative counts once per attempt and adds them across the request. It requests cancellation at 24,000 reported tokens by default; an in-flight model call can exceed that threshold before reporting. The overall time and idle limits apply independent of token reporting.
 
-The thread remains open after a successful turn. Follow-up language can refer to earlier choices and results, and answer-only turns may return a conversational message with zero operations. If the rollout is unavailable, MorAssistant starts a replacement thread seeded with up to twelve recent visible turns instead of silently discarding the conversation.
+Attempt threads close after use. Follow-ups receive a bounded recent recap from the durable transcript, while the latest Onshape snapshot remains authoritative. Answer-only turns can return a conversational message with zero operations.
 
 The operation language currently includes:
 
@@ -196,7 +196,7 @@ This produces an agentic recovery loop without erasing the approval boundary.
 |:--|:--:|:--|
 | Onshape/Codex disconnected | No | Setup state; no plan is created |
 | Geometry evidence unavailable | No | Continue with feature evidence and show trace warning |
-| Invalid Codex JSON/schema | No | Return validator feedback and retry, maximum three attempts |
+| Invalid Codex JSON/schema | No | At most one correction when the remaining token budget allows it |
 | Invented or stale feature reference | No | Reject during live-model validation and retry |
 | Model changes after preview | No | Reject apply with conflict; create a fresh plan |
 | Onshape rejects an operation | Maybe not | Record exact operation failure and stop |

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { OnshapeElementContext, OnshapeElementType } from "@morassistant/shared-types";
+import type { OnshapeElementContext, OnshapeElementType, PlanningUsage } from "@morassistant/shared-types";
 
 const safeId = z.string().min(1).max(200);
 const featureJson = z.string().min(2).max(100_000);
@@ -360,6 +360,7 @@ export interface StoredCadPlan extends CadPlan {
   createdAt: string;
   agentTrace?: {
     planningAttempts: number;
+    usage?: PlanningUsage;
     elementType?: OnshapeElementType;
     continuedConversation?: boolean;
     runtime?: {

@@ -163,13 +163,14 @@ describe("installed Onshape extension pipeline", () => {
     const repairedPlanResponse = await fetch(`${appOrigin}/api/plans`, {
       method: "POST",
       headers: sessionHeaders({ origin: appOrigin, "content-type": "application/json" }),
-      body: JSON.stringify({ prompt: "Exercise self-correcting plan validation", context })
+      body: JSON.stringify({ prompt: "Exercise self-correcting plan validation and inspect geometry", context })
     });
     expect(repairedPlanResponse.status).toBe(201);
     expect(await repairedPlanResponse.json()).toMatchObject({
       status: "pending",
       agentTrace: {
         planningAttempts: 2,
+        usage: { totalTokens: 6420, cachedInputTokens: 1800, limitTokens: 24000 },
         featureCount: 1,
         dependencyCount: 0,
         geometry: { solidBodyCount: 1, faceCount: 6, edgeCount: 12, vertexCount: 8 }
@@ -679,7 +680,7 @@ describe("installed Onshape extension pipeline", () => {
     const context = { documentId: "d", workspaceId: "w", elementId: "e", server: onshapeOrigin };
     const headers = sessionHeaders({ origin: appOrigin, "content-type": "application/json" });
     const readJob = async (id: string) => fetch(`${appOrigin}/api/plan-jobs/${id}`, { headers }).then((r) => r.json()) as Promise<{
-      status: string; reportedTokens?: number; error?: string; plan?: unknown;
+      status: string; usage?: { totalTokens: number; cachedInputTokens: number }; error?: string; plan?: unknown;
     }>;
     const start = async (prompt: string) => {
       const response = await fetch(`${appOrigin}/api/plan-jobs`, { method: "POST", headers, body: JSON.stringify({ prompt, context }) });
@@ -696,7 +697,7 @@ describe("installed Onshape extension pipeline", () => {
     const before = await fetch(`${onshapeOrigin}/__state`).then((r) => r.json());
     const manual = await start("Hold the silent planning fixture for me to stop");
     expect(manual.deadlineAt - manual.createdAt).toBe(1400);
-    await expect.poll(async () => (await readJob(manual.id)).reportedTokens, { timeout: 1_000, interval: 20 }).toBe(3210);
+    await expect.poll(async () => (await readJob(manual.id)).usage?.totalTokens, { timeout: 1_000, interval: 20 }).toBe(3210);
     const active = await fetch(`${appOrigin}/api/plan-jobs/latest?${new URLSearchParams(context)}`, { headers });
     expect(await active.json()).toMatchObject({ job: { id: manual.id, status: "planning" } });
     const unauthorized = await fetch(`${appOrigin}/api/plan-jobs/${manual.id}/cancel`, { method: "POST", headers: { origin: appOrigin } });
@@ -713,11 +714,38 @@ describe("installed Onshape extension pipeline", () => {
     const unresponsive = await start("Hold the unresponsive planning fixture past the stop request");
     expect((await finished(unresponsive.id, "timed_out")).error).toContain("terminated its local Codex worker");
 
+    const budget = await start("Hold the over-budget planning fixture until stopped");
+    const stopped = await finished(budget.id, "token_limit");
+    expect(stopped.usage).toMatchObject({ totalTokens: 25000, cachedInputTokens: 900 });
+    expect(stopped.error).toMatch(/24,000-token.*Codex confirmed/);
+    expect(stopped.plan).toBeUndefined();
+
+    const tooExpensiveToRepair = await start("Exercise self-correcting plan validation and the high-usage repair guard");
+    const uncorrected = await finished(tooExpensiveToRepair.id, "failed");
+    expect(uncorrected.usage?.totalTokens).toBe(21000);
+    expect(uncorrected.error).toContain("after 1 attempt");
+
     const next = await start("What did we just change?");
     expect((await finished(next.id, "completed")).plan).toBeTruthy();
     const after = await fetch(`${onshapeOrigin}/__state`).then((r) => r.json());
     expect(after).toEqual(before);
   }, 12_000);
+
+  it("keeps a large snapshot compact and ranks the named target into the model prompt", async () => {
+    const response = await fetch(`${appOrigin}/api/plans`, {
+      method: "POST", headers: sessionHeaders({ origin: appOrigin, "content-type": "application/json" }),
+      body: JSON.stringify({ prompt: "Measure compact payload for Named Budget Target", context: {
+        documentId: "large-budget-doc", workspaceId: "workspace", elementId: "element", server: onshapeOrigin
+      } })
+    });
+    const plan = await response.json();
+    expect(response.status, JSON.stringify(plan)).toBe(201);
+    expect(plan.agentTrace.featureCount).toBeGreaterThan(250);
+    const [, bytes, snippets] = plan.summary.match(/^Compact test: (\d+) bytes; (\d+) of \d+ features$/) ?? [];
+    expect(Number(bytes)).toBeLessThan(14_000);
+    expect(Number(snippets)).toBeLessThanOrEqual(32);
+    expect(plan.operations).toHaveLength(0);
+  });
 
   it("repairs a blank keychain proposal and verifies the exact editable text before engraving", async () => {
     const context = { documentId: "lettering-doc", workspaceId: "workspace", elementId: "element", server: onshapeOrigin };

@@ -259,13 +259,18 @@ const onshape = createServer(async (request, response) => {
       });
       return response.end(JSON.stringify({ message: "mock feature-list rate limit" }));
     }
+    const features = [feature, ...sketches];
+    if (url.pathname.includes("/d/large-budget-doc/")) {
+      for (let index = 0; index < 250; index += 1) features.push({ featureId: `budget-${index}`, featureType: "newSketch",
+        name: index === 0 ? "Named Budget Target" : `Budget profile ${index}`, largeUnneededField: "fixture payload ".repeat(500) });
+    }
     return json(response, 200, {
       btType: "BTFeatureListResponse-2457",
       libraryVersion: 3000,
       serializationVersion: "1.2.4",
       sourceMicroversion: `m${microversion}`,
-      features: [feature, ...sketches],
-      featureStates: Object.fromEntries([feature, ...sketches].map((item) => [item.featureId, item.name === "Broken Base"
+      features,
+      featureStates: Object.fromEntries(features.map((item) => [item.featureId, item.name === "Broken Base"
         ? { featureStatus: "ERROR", message: "Deterministic regeneration fixture failure" }
         : { featureStatus: "OK" }
       ]))

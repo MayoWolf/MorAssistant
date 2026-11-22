@@ -47,11 +47,11 @@ MorAssistant is a free, open-source **Onshape right-panel copilot** powered by C
 
 The composer defaults to **GPT‑6.2 Sol · High** and shows the models and reasoning levels available through your ChatGPT sign-in. Switch models between turns while staying in the same tab conversation. Attach a specific feature or instance with **+ CAD target** when your request refers to “this part” or “that extrude.”
 
-During a turn, the planner can look up an Onshape operation’s prerequisites and live feature specification or inspect a specific feature payload, assembly occurrence or mate. The panel shows elapsed time, the latest backend update and the token count for the latest model call when Codex reports it. **Stop planning** interrupts the turn. A request stops after four minutes or 90 seconds without Codex activity. The review card shows the proposed edits and which model produced the turn.
+MorAssistant starts each request with a compact, ranked view of the workspace and looks up detailed CAD evidence only when needed. The panel shows elapsed time, the latest activity, and total reported tokens across the request, including how much input was cached. **Stop planning** interrupts the turn. Defaults are two minutes total, 45 seconds without Codex activity, and a 24,000-token stop threshold. Codex reports usage after model calls, so an in-flight call can exceed the threshold. Reported tokens are not a bill or a credit balance.
 
 ### What “Adam-like” means here
 
-Each Part Studio and Assembly has its own durable Codex conversation. The visible transcript survives panel reloads, the underlying app-server thread survives backend restarts, and follow-up turns retain names, dimensions, component references, corrections, and design intent. Before every new reply, MorAssistant reads the current model or reuses only a recent exact-microversion encrypted snapshot; approval always revalidates the live model, so conversation memory never overrides actual CAD state. If a saved Codex rollout cannot be reopened, the backend seeds a replacement thread from the recent encrypted transcript.
+Each Part Studio and Assembly has its own encrypted conversation transcript. The visible chat survives reloads and backend restarts. Codex gets a short recap of the latest turns and attached targets in a fresh planning thread, so old tool output and workspace dumps cannot balloon the next request. Approval validates against the current CAD state regardless of what the conversation remembers.
 
 The agent operates on the model’s real feature history, not on a screenshot and not by hallucinating CAD JSON. Sol chooses from a typed CAD vocabulary; deterministic builders compile common intent into native Onshape features; the trusted host checks dependencies and regeneration after every operation. The raw-feature route remains an escape hatch for less common Part Studio features, not the default for basic geometry. Informational follow-ups can return a normal chat answer with no CAD operations and no approval button.
 
@@ -96,10 +96,10 @@ The model context is deliberately CAD-shaped:
 | Tool curriculum | 177 built-in sketch, solid, surface, curve, sheet-metal, frame, assembly, inspection, and metadata lessons | Teaches prerequisites, method, and verification—not just toolbar names |
 | Live feature specs | Exact feature types and parameter definitions returned by the active Part Studio | Adapts to the current Onshape release and installed custom FeatureScript tools |
 | Live web research | Current primary sources for season rules, standards, products, and physical dimensions | Grounds requests such as the 2026 FRC season or regulation sports equipment in verifiable facts |
-| Live activity | Detailed reasoning summaries, web-search activity, inspection, and validation state | Replaces an opaque loading animation without exposing private chain-of-thought |
+| Live activity | Concise reasoning summaries, web-search activity, inspection, validation and reported usage | Shows progress without exposing private chain-of-thought |
 | Conversation context | Persistent Codex thread plus the visible prompt/plan transcript for the active element | Makes “it,” “those wheels,” “the last sketch,” and other follow-ups refer to earlier turns |
 
-Read-only geometric analysis uses Onshape's FeatureScript evaluation API. Persistent changes use Onshape's native Feature API, so the result remains editable, ordered, parametric CAD. Invalid model output is not merely rejected: the validation failure is fed back into the same planning thread for up to three bounded repair passes.
+Read-only geometric analysis uses Onshape's FeatureScript evaluation API. Persistent changes use Onshape's native Feature API, so the result remains editable, ordered, parametric CAD. An invalid plan can get one focused correction if reported usage leaves enough room. Otherwise the panel reports the validator's reason.
 
 ## Use it inside Onshape
 
@@ -142,10 +142,10 @@ MorAssistant now uses two complementary knowledge layers. The versioned **177-to
 | Read the active Part Studio model | ✅ | Feature payload, dependency, topology, mass-property, and rebuild inspection |
 | Evaluate FeatureScript for geometry analysis | ✅ | Read-only lambda evaluation; no persistent mutation |
 | Research current real-world facts | ✅ | First-party live web search, primary-source preference, source links in every researched preview |
-| Show planning progress live | ✅ | Detailed reasoning summaries plus inspection, research, and trusted-validation events; raw private reasoning is never exposed |
+| Show planning progress live | ✅ | Concise reasoning summaries plus inspection, research and trusted validation; raw private reasoning is never exposed |
 | Continue an element conversation | ✅ | Durable app-server thread per Part Studio or Assembly, encrypted thread mapping, reloadable transcript, and live-model refresh on every turn |
 | Answer without changing CAD | ✅ | Natural assistant response with an empty operation list and no apply action |
-| Self-correct an invalid generated plan | ✅ | Up to three schema + live feature-tree validation passes |
+| Self-correct an invalid generated plan | ✅ | At most one automatic correction, within the planning budget |
 | Create rectangle, square, and circle sketches in 3D | ✅ | Typed Top, Front, and Right datum-plane geometry with explicit world-axis mapping |
 | Build cylinders and blind/offset extrudes | ✅ | Typed `NEW`, `ADD`, `REMOVE`, and `INTERSECT` operations with direction, symmetry, and starting offset |
 | Validate real-world spatial intent | ✅ | Axis, side, symmetry, clearance, and proportion reasoning plus deterministic bilateral wheel compilation and a hard vehicle-orientation check |
@@ -211,11 +211,11 @@ The model never receives an Onshape OAuth token, never sends arbitrary REST requ
 
 - **Preview before mutation** — creating a plan and applying it are separate endpoints.
 - **Timeout-resistant planning** — the panel starts a background planning job and polls it, so a long Codex turn never depends on a CDN request timeout.
-- **Visible live work** — the panel streams inspection state, detailed reasoning summaries, web-research activity, correction passes, and final trusted validation instead of showing a generic skeleton.
+- **Visible live work** — the panel shows inspection, concise reasoning summaries, research, validation, and per-request usage.
 - **Source-backed research** — current rules and dimensions are researched with a preference for FIRST, governing bodies, standards, and manufacturer documentation; used sources are clickable in the preview.
 - **Strict structured output** — Codex output is normalized and parsed through a closed schema.
 - **Verified model runtime** — the configured Sol model and reasoning effort must exist in the signed-in model catalog; a mismatched thread is stopped before planning.
-- **Bounded self-repair** — invalid generated plans receive precise validator feedback for at most three attempts.
+- **Bounded self-repair** — invalid generated plans receive one correction only if the request still has room in its budget.
 - **Dependency-aware impact** — direct downstream dependents are surfaced before whole-feature replacement or deletion.
 - **Current-state validation** — feature names, parameter expressions, assembly instance identities, occurrence transforms, trusted component sources, and Onshape microversions must still match.
 - **Per-operation verification** — execution stops on the first operation that introduces a new regeneration error.
