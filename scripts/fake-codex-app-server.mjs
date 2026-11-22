@@ -90,6 +90,30 @@ function planFromInput(params, earlierTurns = []) {
       !model.liveNativeFeatures?.relevantFeatureSpecs?.some((entry) => ["extrude", "newSketch"].includes(entry.featureType))) {
     throw new Error("The fake planner did not receive the complete Onshape curriculum and live feature specifications.");
   }
+  if (/engrave "MORTORQ"/iu.test(userRequest)) {
+    if (!text.includes("Never present an unmarked generic disk") ||
+        !params.outputSchema?.properties?.operations?.items?.properties?.type?.enum?.includes("create_text_sketch")) {
+      throw new Error("The planner did not receive the updated design brief and typed lettering operation.");
+    }
+    const rectangle = { type: "create_rectangle_sketch", sketchName: "Tag outline", plane: "Top", widthMm: 60, heightMm: 25, centerXmm: 0, centerYmm: 0, reason: "Leave room for wide lettering and an eyelet" };
+    const extrude = (featureName, sourceFeatureName, operation, depthMm, startOffsetMm = 0, oppositeDirection = false) => ({
+      type: "extrude_sketch", featureName, sourceFeatureName, operation, depthMm, startOffsetMm,
+      startOffsetOppositeDirection: false, oppositeDirection, symmetric: false, reason: "Build the tag and keep its lettering attached to the part"
+    });
+    const corrected = userRequest.includes("Validation feedback: Requested lettering");
+    return {
+      summary: corrected ? "Engrave a readable MORTORQ tag with a ring hole" : "Create a blank tag",
+      risk: "medium",
+      operations: [rectangle, extrude("Tag body", rectangle.sketchName, "NEW", 4), ...(corrected ? [
+        { type: "create_circle_sketch", sketchName: "Ring hole profile", plane: "Top", radiusMm: 2.75, centerXmm: -23, centerYmm: 0, reason: "Fit a split ring" },
+        extrude("Ring through-hole", "Ring hole profile", "REMOVE", 4.5),
+        { type: "create_text_sketch", sketchName: "Tag lettering", plane: "Top", text: "MORTORQ", heightMm: 6, baselineXmm: -15, baselineYmm: -2.5, reason: "Spell the visible inscription exactly" },
+        extrude("Engraved lettering", "Tag lettering", "REMOVE", 0.7, 4, true)
+      ] : [])],
+      warnings: [],
+      requiresApproval: true
+    };
+  }
   if (/what did we just|what have we done|summarize (?:our|the) conversation/i.test(userRequest)) {
     return {
       summary: "Answer the conversation follow-up",

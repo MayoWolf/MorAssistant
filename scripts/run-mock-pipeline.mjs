@@ -336,6 +336,12 @@ const onshape = createServer(async (request, response) => {
     if (!isSketch && !isNativeFeature) {
       return json(response, 400, { message: "invalid native feature fixture" });
     }
+    const textEntity = body.feature.entities?.find((entity) => entity.btType === "BTMSketchTextEntity-1761");
+    if (textEntity && (textEntity.entityType !== "TEXT" || textEntity.isConstruction || !textEntity.text ||
+      textEntity.ascent !== 0.006 || textEntity.baselineStartX !== -0.015 || textEntity.baselineStartY !== -0.0025 ||
+      textEntity.baselineDirectionX !== 1 || textEntity.baselineDirectionY !== 0 || textEntity.fontName !== "OpenSans-Regular.ttf")) {
+      return json(response, 400, { message: "incorrect native sketch lettering request" });
+    }
     if (body.feature?.featureType === "extrude") {
       const parameters = new Map((body.feature.parameters ?? []).map((parameter) => [parameter.parameterId, parameter]));
       const region = parameters.get("entities")?.queries?.[0];
@@ -355,7 +361,8 @@ const onshape = createServer(async (request, response) => {
     sketches.push(sketch);
     microversion += 1;
     return json(response, 200, {
-      feature: sketch,
+      // Exercise confirmation by feature-list read-back when the write result is sparse.
+      feature: textEntity ? { ...sketch, entities: undefined } : sketch,
       featureState: { featureStatus: "OK", inactive: false },
       serializationVersion: "1.2.4",
       sourceMicroversion: `m${microversion}`,

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import type { StoredCadPlan } from "@morassistant/cad-command-schema";
+import { FlatLayout } from "./FlatLayout.js";
 import {
   DEFAULT_CODEX_EFFORT, DEFAULT_CODEX_MODEL,
   type CadTarget, type CodexEffort, type ConnectionStatus, type DeviceCodeLogin, type OnshapeElementContext, type OnshapeElementType,
@@ -242,6 +243,7 @@ function operationTitle(operation: PlanOperation): string {
     case "update_dimension": return "Update dimension";
     case "create_rectangle_sketch": return "Create rectangle sketch";
     case "create_circle_sketch": return "Create circle sketch";
+    case "create_text_sketch": return "Create editable lettering";
     case "extrude_sketch": return "Extrude sketch";
     case "fillet_feature_edges": return "Fillet feature edges";
     case "chamfer_feature_edges": return "Chamfer feature edges";
@@ -265,6 +267,8 @@ function OperationDetail({ operation }: { operation: PlanOperation }) {
       return <p><code>{operation.sketchName}</code><i>·</i><code>{operation.widthMm} × {operation.heightMm} mm · {operation.plane}</code></p>;
     case "create_circle_sketch":
       return <p><code>{operation.sketchName}</code><i>·</i><code>Ø{operation.radiusMm * 2} mm · {operation.plane}</code></p>;
+    case "create_text_sketch":
+      return <p><code>“{operation.text}”</code><i>·</i><code>{operation.heightMm} mm text · {operation.plane}</code></p>;
     case "extrude_sketch":
       return <p><code>{operation.sourceFeatureName}</code><i>→</i><code>{operation.featureName} · {operation.depthMm} mm{operation.startOffsetMm > 0 ? ` · offset ${operation.startOffsetMm} mm` : ""} · {operation.operation}</code></p>;
     case "fillet_feature_edges":
@@ -309,6 +313,7 @@ function PlanCard({
     </div>}
     {(!hasOperations || (plan.message && plan.message !== plan.summary)) &&
       <p className="assistant-copy">{plan.message ?? plan.summary}</p>}
+    {plan.status === "pending" && <FlatLayout operations={plan.operations} />}
     {hasOperations && <ol className="operations">
       {plan.operations.map((operation, index) => <li key={`${operation.type}-${index}`}>
         <span className="op-index">{String(index + 1).padStart(2, "0")}</span>

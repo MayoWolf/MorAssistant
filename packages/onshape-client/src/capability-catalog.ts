@@ -95,7 +95,7 @@ const sketchGeometry = defineMany("sketch_geometry", "sketch", "native_sketch", 
   ["spline", "Spline", "newSketch", "fit spline|freeform curve", "Ordered fit points and optional end conditions.", "Use the fewest fit points practical; constrain endpoints and tangency/curvature deliberately."],
   ["bezier", "Bezier", "newSketch", "control polygon curve", "Endpoints and control points.", "Use control points to shape a polynomial curve with predictable continuity."],
   ["conic", "Conic", "newSketch", "parabola|hyperbola|rho conic", "Endpoints, shoulder point, and rho.", "Use when a controlled conic transition is preferable to a spline."],
-  ["text", "Sketch text", "newSketch", "label|engraving text|emboss text", "Text, font settings, anchor, and size.", "Create text curves suitable for extrude, remove, split, or wrap."],
+  ["text", "Sketch text", "newSketch", "label|lettering|engrave|engraving text|emboss|emboss text", "Exact text, baseline position and text height.", "Use typed create_text_sketch for editable lettering. For physical lettering, follow with extrude_sketch ADD (raised) or REMOVE (engraved) at the appropriate face offset."],
   ["slot", "Slot", "newSketch", "straight slot|arc slot|keyway", "Slot centerline or arc plus width.", "Create a closed constant-width slot and fully constrain its path and width."],
   ["inscribed-polygon", "Inscribed polygon", "newSketch", "polygon inside circle|regular polygon", "Center, vertex radius, and side count.", "Place vertices on the construction circle."],
   ["circumscribed-polygon", "Circumscribed polygon", "newSketch", "polygon around circle", "Center, apothem, and side count.", "Place side midpoints tangent to the construction circle."],
@@ -299,7 +299,7 @@ const metadata = defineMany("metadata_configuration", "document", "native_featur
   ["model-based-definition", "Model-based definition", "", "mfd|3d annotations|gdt", "Model faces/edges and engineering requirements.", "Create dimensions, datum references, and tolerances only from explicit engineering intent." ]
 ]);
 
-const typedCapabilityIds = new Set(["corner-rectangle", "center-point-circle", "extrude", "fillet", "chamfer"]);
+const typedCapabilityIds = new Set(["corner-rectangle", "center-point-circle", "text", "extrude", "fillet", "chamfer"]);
 
 export const ONSHAPE_CAPABILITY_CATALOG: readonly OnshapeCapability[] = Object.freeze([
   ...sketchGeometry,

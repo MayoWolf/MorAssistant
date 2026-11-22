@@ -101,6 +101,41 @@ describe("CAD plan validation", () => {
     expect(answer.operations).toEqual([]);
   });
 
+  it("requires visible literal wording even if the plan promises it in a feature name", () => {
+    const text = {
+      type: "create_text_sketch", sketchName: "Label", plane: "Top", text: "Sam's Lab", heightMm: 5,
+      baselineXmm: -10, baselineYmm: -2, reason: "Place editable lettering"
+    };
+    const engraving = { type: "extrude_sketch", featureName: "Sam's Lab", sourceFeatureName: "Label", depthMm: 0.6,
+      operation: "REMOVE", startOffsetMm: 3, startOffsetOppositeDirection: false, oppositeDirection: true,
+      symmetric: false, reason: "Engrave the face" };
+    const make = (...operations: object[]) => cadPlanSchema.parse(normalizeCadPlanOutput({ ...plan, risk: "medium", operations }));
+    const prompt = 'Engrave "Sam\'s Lab" on the face.';
+    expect(() => validatePlanAgainstIntent(prompt, make({ ...text, text: "SAM'S LAB" }, engraving))).toThrow("must appear exactly");
+    expect(() => validatePlanAgainstIntent(prompt, make(text))).toThrow("later REMOVE extrude");
+    expect(() => validatePlanAgainstIntent(prompt, make(text, { ...engraving, operation: "NEW" }))).toThrow("disconnected solid");
+    expect(validatePlanAgainstIntent(prompt, make(text, engraving)).operations).toHaveLength(2);
+    expect(validatePlanAgainstIntent('Create sketch text "Sam\'s Lab"', make(text)).operations).toHaveLength(1);
+    expect(validatePlanAgainstIntent('Do not engrave "NO". Rename the feature only.', plan)).toBe(plan);
+  });
+
+  it("rejects a blank keychain disk and a blind or misplaced attachment hole", () => {
+    const prompt = "CAD from scratch, a mortorq keychain.";
+    const disk = { type: "create_circle_sketch", sketchName: "Base", plane: "Top", radiusMm: 20, centerXmm: 0, centerYmm: 0, reason: "Make the blank" };
+    const solid = { type: "extrude_sketch", featureName: "Disk", sourceFeatureName: "Base", depthMm: 4,
+      operation: "NEW", startOffsetMm: 0, startOffsetOppositeDirection: false, oppositeDirection: false,
+      symmetric: false, reason: "Build the body" };
+    const hole = { ...disk, sketchName: "Eyelet", radiusMm: 2.5, centerXmm: 14 };
+    const cut = { ...solid, featureName: "Through hole", sourceFeatureName: hole.sketchName, operation: "REMOVE" };
+    const make = (...operations: object[]) => cadPlanSchema.parse({ ...plan, risk: "medium", operations });
+    for (const proposal of [make(disk, solid), make(disk, solid, hole, { ...cut, depthMm: 2 }),
+      make(disk, solid, { ...hole, centerXmm: 19 }, cut)]) {
+      expect(() => validatePlanAgainstIntent(prompt, proposal)).toThrow("usable ring attachment");
+    }
+    const complete = make(disk, solid, hole, cut);
+    expect(validatePlanAgainstIntent(prompt, complete)).toBe(complete);
+  });
+
   it("accepts only browser-safe research source URLs", () => {
     expect(cadPlanSchema.parse({
       ...plan,

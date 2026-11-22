@@ -718,4 +718,34 @@ describe("installed Onshape extension pipeline", () => {
     const after = await fetch(`${onshapeOrigin}/__state`).then((r) => r.json());
     expect(after).toEqual(before);
   }, 12_000);
+
+  it("repairs a blank keychain proposal and verifies the exact editable text before engraving", async () => {
+    const context = { documentId: "lettering-doc", workspaceId: "workspace", elementId: "element", server: onshapeOrigin };
+    const headers = sessionHeaders({ origin: appOrigin, "content-type": "application/json" });
+    const readState = () => fetch(`${onshapeOrigin}/__state`).then((r) => r.json());
+    const before = await readState();
+    const response = await fetch(`${appOrigin}/api/plans`, {
+      method: "POST", headers, body: JSON.stringify({ prompt: 'CAD from scratch, a mortorq keychain. Engrave "MORTORQ".', context })
+    });
+    const plan = await response.json();
+    expect(response.status, JSON.stringify(plan)).toBe(201);
+    expect(plan).toMatchObject({ status: "pending", agentTrace: { planningAttempts: 2, runtime: { model: "gpt-6.2-sol" } } });
+    expect(plan.operations).toHaveLength(6);
+    expect(plan.operations[4]).toMatchObject({ type: "create_text_sketch", text: "MORTORQ", heightMm: 6 });
+    expect(plan.operations[5]).toMatchObject({ type: "extrude_sketch", sourceFeatureName: "Tag lettering", operation: "REMOVE", startOffsetMm: 4 });
+    expect(await readState()).toEqual(before);
+    const apply = await fetch(`${appOrigin}/api/plans/${plan.id}/apply`, { method: "POST", headers: sessionHeaders({ origin: appOrigin }) });
+    expect(apply.status).toBe(200);
+    expect(await apply.json()).toMatchObject({ status: "applied", result: {
+      operations: Array.from({ length: 6 }, () => ({ status: "applied", verification: "passed" })), regenerationErrors: []
+    } });
+    const after = await readState();
+    const text = after.sketches.find((feature: { name: string }) => feature.name === "Tag lettering");
+    expect(text.entities).toEqual([expect.objectContaining({ btType: "BTMSketchTextEntity-1761", text: "MORTORQ", ascent: 0.006 })]);
+    const engraving = after.sketches.find((feature: { name: string }) => feature.name === "Engraved lettering");
+    expect(engraving.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ parameterId: "entities", queries: [expect.objectContaining({ featureId: text.featureId })] }),
+      expect.objectContaining({ parameterId: "operationType", value: "REMOVE" })
+    ]));
+  });
 });

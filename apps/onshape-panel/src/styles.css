@@ -123,6 +123,13 @@ svg { display: block; }
 .past-turn > summary small { display: block; padding-left: 12px; margin-top: 3px; }
 .past-turn[open] .plan { margin-top: 8px; }
 .plan-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.flat-layout { margin: 10px 0 0; border: 1px solid var(--line); border-radius: 7px; background: var(--page); }
+.flat-layout svg { width: 100%; max-height: 190px; }
+.flat-layout .body { fill: var(--accent-soft); stroke: var(--accent); }
+.flat-layout circle.cut, .flat-layout rect.cut { fill: var(--page); stroke: var(--accent); }
+.flat-layout .layout-lettering { font-family: "Open Sans", Arial, sans-serif; fill: var(--ink); white-space: pre; }
+.flat-layout .layout-lettering.cut { opacity: .76; }
+.flat-layout figcaption { padding: 0 7px 6px; color: var(--muted); text-align: center; font-size: 10px; }
 .risk { font-size: 10px; color: var(--warn); background: var(--warn-soft); padding: 3px 6px; border-radius: 5px; white-space: nowrap; }
 .risk.low { color: var(--accent); background: var(--accent-soft); }
 .risk.high { color: var(--error); background: var(--error-soft); }

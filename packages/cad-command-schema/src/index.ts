@@ -116,6 +116,20 @@ export const createCircleSketchOperationSchema = z.object({
   reason: z.string().min(1).max(500)
 }).strict();
 
+export const createTextSketchOperationSchema = z.object({
+  type: z.literal("create_text_sketch"),
+  sketchName: z.string().trim().min(1).max(100),
+  plane: standardPlane,
+  text: z.string().min(1).max(80).refine(
+    (value) => value.trim().length > 0 && !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(value),
+    "Text must be visible, single-line lettering."
+  ),
+  heightMm: z.number().finite().min(0.5).max(1_000),
+  baselineXmm: z.number().finite().min(-100_000).max(100_000),
+  baselineYmm: z.number().finite().min(-100_000).max(100_000),
+  reason: z.string().min(1).max(500)
+}).strict();
+
 export const extrudeSketchOperationSchema = z.object({
   type: z.literal("extrude_sketch"),
   featureName: z.string().trim().min(1).max(100),
@@ -255,6 +269,7 @@ export const cadOperationSchema = z.discriminatedUnion("type", [
   updateDimensionOperationSchema,
   createRectangleSketchOperationSchema,
   createCircleSketchOperationSchema,
+  createTextSketchOperationSchema,
   extrudeSketchOperationSchema,
   filletFeatureEdgesOperationSchema,
   chamferFeatureEdgesOperationSchema,
@@ -293,7 +308,7 @@ export const cadPlanSchema = z.object({
       ? `rename:${operation.featureId}`
       : operation.type === "update_dimension"
         ? `dimension:${operation.featureId}:${operation.parameterId}`
-        : operation.type === "create_rectangle_sketch" || operation.type === "create_circle_sketch"
+        : "sketchName" in operation
           ? `new-feature:${operation.sketchName.toLocaleLowerCase()}`
           : operation.type === "create_feature" || operation.type === "extrude_sketch" || operation.type === "fillet_feature_edges" || operation.type === "chamfer_feature_edges"
             ? `new-feature:${operation.featureName.toLocaleLowerCase()}`
@@ -328,7 +343,7 @@ export const cadPlanSchema = z.object({
     if (operation.type === "insert_assembly_component" && !operation.sourceVersionId && !operation.sourceMicroversionId) {
       context.addIssue({ code: "custom", path: ["operations", index], message: "An inserted component needs a source version or microversion." });
     }
-    if (["create_feature", "replace_feature", "extrude_sketch", "fillet_feature_edges", "chamfer_feature_edges"].includes(operation.type) && plan.risk === "low") {
+    if (["create_feature", "replace_feature", "create_text_sketch", "extrude_sketch", "fillet_feature_edges", "chamfer_feature_edges"].includes(operation.type) && plan.risk === "low") {
       context.addIssue({ code: "custom", path: ["risk"], message: "Native feature payload plans must be at least medium risk." });
     }
   }
@@ -431,6 +446,9 @@ export const CAD_PLAN_JSON_SCHEMA = {
           "plane",
           "widthMm",
           "heightMm",
+          "text",
+          "baselineXmm",
+          "baselineYmm",
           "radiusMm",
           "distanceMm",
           "centerXmm",
@@ -473,6 +491,7 @@ export const CAD_PLAN_JSON_SCHEMA = {
               "update_dimension",
               "create_rectangle_sketch",
               "create_circle_sketch",
+              "create_text_sketch",
               "extrude_sketch",
               "fillet_feature_edges",
               "chamfer_feature_edges",
@@ -518,12 +537,12 @@ export const CAD_PLAN_JSON_SCHEMA = {
           sketchName: {
             type: ["string", "null"],
             maxLength: 100,
-            description: "Unique new sketch name for create_rectangle_sketch or create_circle_sketch; null for other operation types."
+            description: "Unique new sketch name for typed rectangle, circle, and text sketches; null for other operation types."
           },
           plane: {
             type: ["string", "null"],
             enum: ["Top", "Front", "Right", null],
-            description: "Datum plane for typed rectangle or circle sketches. Coordinates are X/Y on Top, X/Z on Front, and Y/Z on Right; null otherwise."
+            description: "Datum plane for typed rectangle, circle or text sketches. Coordinates are X/Y on Top, X/Z on Front, and Y/Z on Right; null otherwise."
           },
           widthMm: {
             type: ["number", "null"],
@@ -535,7 +554,24 @@ export const CAD_PLAN_JSON_SCHEMA = {
             type: ["number", "null"],
             minimum: 0.1,
             maximum: 10_000,
-            description: "Rectangle height in millimeters for create_rectangle_sketch; null otherwise."
+            description: "Rectangle height or text ascent in millimeters for create_rectangle_sketch or create_text_sketch; null otherwise."
+          },
+          text: {
+            type: ["string", "null"],
+            maxLength: 80,
+            description: "Exact single-line visible text for create_text_sketch. Preserve spelling, case, punctuation and spaces; null otherwise."
+          },
+          baselineXmm: {
+            type: ["number", "null"],
+            minimum: -100_000,
+            maximum: 100_000,
+            description: "Left start of the text baseline along the sketch X coordinate, in mm, for create_text_sketch; null otherwise."
+          },
+          baselineYmm: {
+            type: ["number", "null"],
+            minimum: -100_000,
+            maximum: 100_000,
+            description: "Text baseline along the sketch Y coordinate, in mm, for create_text_sketch; null otherwise."
           },
           radiusMm: {
             type: ["number", "null"],
@@ -772,6 +808,18 @@ export function normalizeCadPlanOutput(input: unknown): unknown {
           reason: value.reason
         };
       }
+      if (value.type === "create_text_sketch") {
+        return {
+          type: value.type,
+          sketchName: value.sketchName,
+          plane: value.plane,
+          text: value.text,
+          heightMm: value.heightMm,
+          baselineXmm: value.baselineXmm,
+          baselineYmm: value.baselineYmm,
+          reason: value.reason
+        };
+      }
       if (value.type === "extrude_sketch") {
         return {
           type: value.type,
@@ -918,6 +966,72 @@ function extrudeYInterval(operation: ExtrudeSketchOperation): [number, number] {
   return [Math.min(start, end), Math.max(start, end)];
 }
 
+type TextSketchOperation = Extract<CadOperation, { type: "create_text_sketch" }>;
+
+function blindInterval(operation: ExtrudeSketchOperation): readonly [number, number] {
+  const start = operation.startOffsetMm * (operation.startOffsetOppositeDirection ? -1 : 1);
+  if (operation.symmetric) return [start - operation.depthMm / 2, start + operation.depthMm / 2];
+  const end = start + operation.depthMm * (operation.oppositeDirection ? -1 : 1);
+  return [Math.min(start, end), Math.max(start, end)];
+}
+
+function validateLabelAndKeychainIntent(prompt: string, plan: CadPlan): void {
+  if (!plan.operations.length || /^\s*(?:how|why|what|should|can (?:onshape|i)|is it)\b/iu.test(prompt)) return;
+  const extrudes = plan.operations.filter((operation): operation is ExtrudeSketchOperation => operation.type === "extrude_sketch");
+  const matchingText = (expected: string, mode?: "ADD" | "REMOVE" | "sketch"): boolean =>
+    plan.operations.some((operation, index) => {
+      if (operation.type !== "create_text_sketch") return false;
+      if (operation.text.normalize() !== expected.normalize()) return false;
+      if (mode === "sketch") return true;
+      return extrudes.some((extrude) => plan.operations.indexOf(extrude) > index &&
+        extrude.sourceFeatureName.toLowerCase() === operation.sketchName.toLowerCase() &&
+        (mode ? extrude.operation === mode : ["ADD", "REMOVE"].includes(extrude.operation)));
+    });
+
+  // Enforce literal wording when a CAD verb explicitly introduces quoted text.
+  // Never interpret an unrelated quotation or a negative directive as a label.
+  for (const match of prompt.matchAll(/\b(engrave|etch|deboss|emboss|raise|recess|lettering|text|reads?|says?)\s+(?:(?:the\s+)?(?:words?|text|letters?)\s+)?(?:(?:that|to|as)\s+)?(?:“([^”\r\n]{1,80})”|"([^"\r\n]{1,80})"|'([^'\r\n]{1,80})')/giu)) {
+    const [, verb = "", curly, straight, single] = match;
+    const wording = curly ?? straight ?? single ?? "";
+    const prefix = prompt.slice(0, match.index).split(/[.!?;\n]/u).at(-1) ?? "";
+    if (/\b(?:no|not|never|without|don[’']t)\b/iu.test(prefix)) continue;
+    const mode = /^(?:engrave|etch|deboss|recess)$/iu.test(verb) ? "REMOVE" : /^(?:emboss|raise)$/iu.test(verb) ? "ADD" :
+      /\b(?:only (?:a |the )?sketch|sketch only|sketch text)\b/iu.test(prompt) ? "sketch" : undefined;
+    if (!matchingText(wording, mode)) {
+      throw new Error(`Requested lettering ${JSON.stringify(wording)} must appear exactly in create_text_sketch${mode === "sketch" ? "" : ` and be used by a later ${mode ?? "ADD or REMOVE"} extrude`}. A name, loose sketch or disconnected solid does not fulfill it.`);
+    }
+  }
+
+  if (!/\bkey[ -]?(?:chain|tag|fob)\b/iu.test(prompt) ||
+      !/^\s*(?:please\s+)?(?:cad|design|make|build|create|model|generate)\b/iu.test(prompt) ||
+      /\b(?:existing|without (?:a |the )?(?:hole|loop)|no (?:ring |attachment )?hole|sketch only)\b/iu.test(prompt)) return;
+
+  // Verify flat blanks made from our typed datum profiles. Custom features and
+  // alternate constructions (e.g. an integral loop) need their own evidence.
+  if (plan.operations.some((operation) => operation.type === "create_feature" || operation.type === "replace_feature") ||
+      extrudes.some((operation) => operation.operation === "ADD" && !plan.operations.some((sketch) =>
+        sketch.type === "create_text_sketch" && sketch.sketchName.toLowerCase() === operation.sourceFeatureName.toLowerCase())) ||
+      extrudes.filter((operation) => operation.operation === "NEW").length !== 1) return;
+  const profiles = new Map(plan.operations.filter((operation): operation is CircleSketchOperation | RectangleSketchOperation | TextSketchOperation =>
+    "sketchName" in operation).map((profile) => [profile.sketchName.toLowerCase(), profile]));
+  const base = extrudes.find((operation) => operation.operation === "NEW")!;
+  const outline = profiles.get(base.sourceFeatureName.toLowerCase());
+  if (!outline || outline.type === "create_text_sketch") return;
+  const [baseMin, baseMax] = blindInterval(base);
+  const hasRingHole = extrudes.some((extrude) => {
+    const hole = profiles.get(extrude.sourceFeatureName.toLowerCase());
+    if (extrude.operation !== "REMOVE" || hole?.type !== "create_circle_sketch" || hole.plane !== outline.plane) return false;
+    const [min, max] = blindInterval(extrude);
+    if (min > baseMin + 1e-6 || max < baseMax - 1e-6) return false;
+    const dx = Math.abs(hole.centerXmm - outline.centerXmm);
+    const dy = Math.abs(hole.centerYmm - outline.centerYmm);
+    const margin = hole.radiusMm + 0.5;
+    return outline.type === "create_circle_sketch" ? Math.hypot(dx, dy) + margin < outline.radiusMm :
+      dx + margin < outline.widthMm / 2 && dy + margin < outline.heightMm / 2;
+  });
+  if (!hasRingHole) throw new Error("A flat keychain needs a usable ring attachment. Add a circular through-cut fully inside the outline with material left around it, or use a verified integral loop. A disk or a blind pocket alone is not a keychain.");
+}
+
 /**
  * Reject geometrically valid but semantically implausible constructions for
  * common real-world objects. This is intentionally narrow: it guards failure
@@ -925,6 +1039,7 @@ function extrudeYInterval(operation: ExtrudeSketchOperation): [number, number] {
  * validator can judge every design.
  */
 export function validatePlanAgainstIntent(prompt: string, plan: CadPlan): CadPlan {
+  validateLabelAndKeychainIntent(prompt, plan);
   if (!isFourWheelVehiclePrompt(prompt)) return plan;
 
   const wheelSketches = vehicleWheelSketches(plan);
@@ -1064,15 +1179,12 @@ export function validatePlanAgainstFeatureTree(
       operation.type === "delete_assembly_instance") {
       throw new Error(`${operation.type} can only run in an Assembly.`);
     }
-    if (operation.type === "create_rectangle_sketch" ||
-      operation.type === "create_circle_sketch" ||
+    if ("sketchName" in operation ||
       operation.type === "extrude_sketch" ||
       operation.type === "fillet_feature_edges" ||
       operation.type === "chamfer_feature_edges" ||
       operation.type === "create_feature") {
-      const name = operation.type === "create_rectangle_sketch" || operation.type === "create_circle_sketch"
-        ? operation.sketchName
-        : operation.featureName;
+      const name = "sketchName" in operation ? operation.sketchName : operation.featureName;
       if (operation.type === "create_feature") {
         for (const reference of featureReferences(parseFeatureJson(operation.featureJson))) {
           if (!names.has(reference.toLocaleLowerCase())) {

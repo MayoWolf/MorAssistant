@@ -11,6 +11,15 @@ export interface CircleSketchInput {
   centerYmm: number;
 }
 
+export interface TextSketchInput {
+  name: string;
+  plane: StandardPlane;
+  text: string;
+  heightMm: number;
+  baselineXmm: number;
+  baselineYmm: number;
+}
+
 export interface ExtrudeFeatureInput {
   name: string;
   sketchFeatureId: string;
@@ -225,6 +234,33 @@ export function buildCircleSketchFeature(input: CircleSketchInput): Record<strin
     nodeId: objectId(),
     suppressed: false,
     featureType: "newSketch"
+  };
+}
+
+/** Build editable text, not a renamed feature or simulated lettering. */
+export function buildTextSketchFeature(input: TextSketchInput): Record<string, unknown> {
+  return {
+    ...featureRoot(input.name, "newSketch", [
+      queryList("sketchPlane", [standardPlaneQuery(input.plane, objectId())], sketchPlaneFilter),
+      booleanParameter("disableImprinting", false)
+    ]),
+    btType: "BTMSketch-151",
+    constraints: [],
+    entities: [{
+      btType: "BTMSketchTextEntity-1761",
+      entityType: "TEXT",
+      isConstruction: false,
+      entityId: `text${randomBytes(8).toString("hex")}`,
+      nodeId: objectId(),
+      index: 1,
+      text: input.text,
+      fontName: "OpenSans-Regular.ttf",
+      ascent: input.heightMm / 1_000,
+      baselineStartX: input.baselineXmm / 1_000,
+      baselineStartY: input.baselineYmm / 1_000,
+      baselineDirectionX: 1,
+      baselineDirectionY: 0
+    }]
   };
 }
 

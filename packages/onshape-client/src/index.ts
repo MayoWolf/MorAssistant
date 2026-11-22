@@ -9,7 +9,7 @@ import {
 } from "@morassistant/cad-command-schema";
 import type { OnshapeElementContext, OnshapeElementType, PartStudioContext } from "@morassistant/shared-types";
 import { buildRectangleSketchFeature } from "./rectangle-sketch.js";
-import { buildChamferFeature, buildCircleSketchFeature, buildExtrudeFeature, buildFilletFeature } from "./native-features.js";
+import { buildChamferFeature, buildCircleSketchFeature, buildExtrudeFeature, buildFilletFeature, buildTextSketchFeature } from "./native-features.js";
 
 export {
   ONSHAPE_CAPABILITY_CATALOG,
@@ -34,11 +34,13 @@ export {
   buildChamferFeature,
   buildExtrudeFeature,
   buildFilletFeature,
+  buildTextSketchFeature,
   type CircleSketchInput,
   type ChamferFeatureInput,
   type ExtrudeFeatureInput,
   type ExtrudeOperation,
-  type FilletFeatureInput
+  type FilletFeatureInput,
+  type TextSketchInput
 } from "./native-features.js";
 
 export interface OnshapeOAuthConfig {
@@ -1400,6 +1402,14 @@ export class OnshapeClient {
         message: `Created ${operation.sketchName}: Ø${operation.radiusMm * 2} mm on the ${operation.plane} plane.`,
         response
       };
+    }
+
+    if (operation.type === "create_text_sketch") {
+      if (tree.features.some((feature) => feature.name?.toLocaleLowerCase() === operation.sketchName.toLocaleLowerCase())) {
+        throw new Error(`A feature named ${operation.sketchName} already exists.`);
+      }
+      const response = await this.addFeature(context, buildTextSketchFeature({ ...operation, name: operation.sketchName }), tree);
+      return { message: `Submitted editable lettering “${operation.text}” on ${operation.plane}.`, response };
     }
 
     if (operation.type === "extrude_sketch") {

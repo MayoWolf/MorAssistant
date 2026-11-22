@@ -299,8 +299,7 @@ function treeFromMutationResponse(
 
   let features = structuredClone(tree.features);
   const returnedFeature = responseRecord(result.feature) as OnshapeFeature | undefined;
-  if (operation.type === "create_rectangle_sketch" ||
-    operation.type === "create_circle_sketch" ||
+  if ("sketchName" in operation ||
     operation.type === "extrude_sketch" ||
     operation.type === "fillet_feature_edges" ||
     operation.type === "chamfer_feature_edges" ||
@@ -1482,6 +1481,29 @@ app.post("/api/plans/:id/apply", async (request, reply) => {
       regenerationErrors = currentErrors.filter((item) => !preexistingKeys.has(
         `${item.featureId}\u0000${item.status}\u0000${item.message ?? ""}`
       ));
+      if (operation.type === "create_text_sketch" && regenerationErrors.length === 0) {
+        const matchesText = (feature: OnshapeFeature): boolean => {
+          if (feature.name !== operation.sketchName || !Array.isArray(feature.entities)) return false;
+          return feature.entities.some((entity) => {
+            const data = responseRecord(entity);
+            return data?.btType === "BTMSketchTextEntity-1761" && data.text === operation.text && data.isConstruction !== true;
+          });
+        };
+        if (!currentTree.features.some(matchesText)) {
+          // Some add-feature responses omit entity data. Confirm via the full feature list.
+          if (responseTree) {
+            currentTree = await client.listFeatures(plan.context);
+            storePartStudioSnapshot(session, snapshotKey, currentTree);
+            regenerationErrors = client.regenerationErrors(currentTree).filter((item) => !preexistingKeys.has(
+              `${item.featureId}\u0000${item.status}\u0000${item.message ?? ""}`
+            ));
+          }
+          if (!currentTree.features.some(matchesText) && regenerationErrors.length === 0) {
+            regenerationErrors.push({ featureId: "unknown", featureName: operation.sketchName, status: "CHECK_FAILED",
+              message: "Onshape did not return the exact editable text. Its sketch may need repair or removal before retrying." });
+          }
+        }
+      }
       if (regenerationErrors.length > 0) {
         operations.push({
           index,
